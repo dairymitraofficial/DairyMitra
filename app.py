@@ -91,7 +91,7 @@ def send_email(to, subject, body):
         msg['Subject'] = subject
         msg['From'] = EMAIL_ADDRESS
         msg['To'] = to
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=10) as smtp:
             smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             smtp.send_message(msg)
         return True
@@ -248,7 +248,16 @@ def signup():
             'dairy_name': dairy_name,
             'otp': otp
         }
-        send_email(email, 'तुमचा OTP', f"तुमचा OTP: {otp}")
+        try:
+            import threading
+
+            threading.Thread(
+                target=send_email,
+                args=(email, 'तुमचा OTP', f"तुमचा OTP: {otp}"),
+                daemon=True
+            ).start()
+        except Exception as e:
+            logging.exception("OTP email failed")
         flash('OTP sent. Please verify.', 'info')
         return redirect(url_for('verify_account'))
 
