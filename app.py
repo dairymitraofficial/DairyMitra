@@ -91,32 +91,27 @@ def send_email(to, subject, body):
     print("EMAIL_PASS:", EMAIL_PASSWORD)
 
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-        logging.warning("Email not configured; email skipped.")
+        print("Email not configured")
         return False
 
     try:
+
         msg = EmailMessage()
         msg.set_content(body)
-        msg['Subject'] = subject
-        msg['From'] = EMAIL_ADDRESS
-        msg['To'] = to
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_ADDRESS
+        msg["To"] = to
 
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
-
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            print("SMTP LOGIN SUCCESS")
-
             smtp.send_message(msg)
-            print("EMAIL SENT SUCCESSFULLY")
+
+        print("EMAIL SENT SUCCESS")
 
         return True
 
     except Exception as e:
         print("EMAIL ERROR:", e)
-        logging.exception("Email send failed")
         return False
 
 def generate_otp(length=6):
