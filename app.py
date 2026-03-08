@@ -17,6 +17,8 @@ from twilio.rest import Client
 import smtplib
 from flask import send_from_directory
 from functools import wraps   
+import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
 load_dotenv()
 
 # ------------------------------
@@ -85,35 +87,33 @@ def send_sms(to, body):
         return False
 
 
-import threading
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 
 def send_email(to, subject, body):
 
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-        print("Email config missing")
+    configuration = sib_api_v3_sdk.Configuration()
+    configuration.api_key['api-key'] = BREVO_API_KEY
+
+    api_instance = sib_api_v3_sdk.TransactionalEmailsApi(
+        sib_api_v3_sdk.ApiClient(configuration)
+    )
+
+    email = sib_api_v3_sdk.SendSmtpEmail(
+        to=[{"email": to}],
+        sender={"email": "dairymitra.official@gmail.com", "name": "DairyMitra"},
+        subject=subject,
+        text_content=body
+    )
+
+    try:
+        api_instance.send_transac_email(email)
+        print("EMAIL SENT SUCCESS")
+        return True
+    except ApiException as e:
+        print("EMAIL ERROR:", e)
         return False
 
-    def _send():
-        try:
-            msg = EmailMessage()
-            msg["Subject"] = subject
-            msg["From"] = EMAIL_ADDRESS
-            msg["To"] = to
-            msg.set_content(body)
 
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
-                smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-                smtp.send_message(msg)
-
-            print("EMAIL SENT SUCCESS")
-
-        except Exception as e:
-            print("EMAIL ERROR:", str(e))
-
-    # background thread
-    threading.Thread(target=_send).start()
-
-    return True
 def generate_otp(length=6):
     return ''.join(secrets.choice(string.digits) for _ in range(length))
 
