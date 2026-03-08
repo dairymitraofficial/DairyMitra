@@ -428,7 +428,7 @@ def add_vendor():
 
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    # NEXT AUTO ID
+    # NEXT AUTO ID suggestion
     cursor.execute("""
         SELECT MAX(vendor_id) AS max_id
         FROM vendors
@@ -458,43 +458,17 @@ def add_vendor():
         existing = cursor.fetchone()
 
         if existing:
+            flash(f"❌ Vendor already exists at ID {vendor_id}", "danger")
 
-            # SAFE SHIFT (reverse order)
-            cursor.execute("""
-                SELECT vendor_id FROM vendors
-                WHERE user_id=%s AND vendor_id >= %s
-                ORDER BY vendor_id DESC
-            """, (session['id'], vendor_id))
-
-            rows = cursor.fetchall()
-
-            for r in rows:
-                old_id = r['vendor_id']
-                new_id = old_id + 1
-
-                cursor.execute("""
-                    UPDATE vendors
-                    SET vendor_id=%s
-                    WHERE vendor_id=%s AND user_id=%s
-                """, (new_id, old_id, session['id']))
-
-                cursor.execute("""
-                    UPDATE milk_collection
-                    SET vendor_id=%s
-                    WHERE vendor_id=%s AND user_id=%s
-                """, (new_id, old_id, session['id']))
-
-                cursor.execute("""
-                    UPDATE advance
-                    SET vendor_id=%s
-                    WHERE vendor_id=%s AND user_id=%s
-                """, (new_id, old_id, session['id']))
-
-                cursor.execute("""
-                    UPDATE food_sack
-                    SET vendor_id=%s
-                    WHERE vendor_id=%s AND user_id=%s
-                """, (new_id, old_id, session['id']))
+            return render_template(
+                'vendors/add_vendor.html',
+                next_vendor_id=next_vendor_id,
+                name=name,
+                address=address,
+                milk_type=milk_type,
+                phone=phone,
+                vendor_id=vendor_id
+            )
 
         # INSERT NEW VENDOR
         cursor.execute("""
@@ -505,7 +479,7 @@ def add_vendor():
 
         mysql.connection.commit()
 
-        flash("Vendor Added Successfully","success")
+        flash("✔ Vendor Added Successfully","success")
 
         return redirect(url_for('add_vendor'))
 
@@ -569,58 +543,17 @@ def delete_vendor(vendor_id):
 
     cursor = mysql.connection.cursor()
 
-    # DELETE RECORDS
-    cursor.execute("""
-        DELETE FROM milk_collection
-        WHERE vendor_id=%s AND user_id=%s
-    """,(vendor_id,session['id']))
-
-    cursor.execute("""
-        DELETE FROM advance
-        WHERE vendor_id=%s AND user_id=%s
-    """,(vendor_id,session['id']))
-
-    cursor.execute("""
-        DELETE FROM food_sack
-        WHERE vendor_id=%s AND user_id=%s
-    """,(vendor_id,session['id']))
-
+    # delete vendor
     cursor.execute("""
         DELETE FROM vendors
         WHERE vendor_id=%s AND user_id=%s
     """,(vendor_id,session['id']))
-
-    # SHIFT IDS UP
-    cursor.execute("""
-        UPDATE vendors
-        SET vendor_id = vendor_id - 1
-        WHERE user_id=%s AND vendor_id > %s
-    """,(session['id'],vendor_id))
-
-    cursor.execute("""
-        UPDATE milk_collection
-        SET vendor_id = vendor_id - 1
-        WHERE user_id=%s AND vendor_id > %s
-    """,(session['id'],vendor_id))
-
-    cursor.execute("""
-        UPDATE advance
-        SET vendor_id = vendor_id - 1
-        WHERE user_id=%s AND vendor_id > %s
-    """,(session['id'],vendor_id))
-
-    cursor.execute("""
-        UPDATE food_sack
-        SET vendor_id = vendor_id - 1
-        WHERE user_id=%s AND vendor_id > %s
-    """,(session['id'],vendor_id))
 
     mysql.connection.commit()
 
     flash("Vendor Deleted","success")
 
     return redirect(url_for('vendor_list'))
-
 # ------------------------------
 # Milk Rate
 # ------------------------------
@@ -1075,96 +1008,104 @@ def delete_food_sack_rate(sack_id):
 # ------------------------------
 # Edit Entry & safer update_entries
 # ------------------------------
-@app.route('/edit_entry', methods=['GET', 'POST'])
+@app.route('/edit_entry', methods=['GET','POST'])
 def edit_entry():
+
     if "id" not in session:
         flash("Please login first.", "danger")
         return redirect(url_for("login"))
 
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    # Load vendors with milk_type
     cursor.execute("""
-        SELECT vendor_id, name, milk_type
+        SELECT vendor_id,name,milk_type
         FROM vendors
         WHERE user_id=%s
         ORDER BY vendor_id ASC
-    """, (session['id'],))
+    """,(session['id'],))
+
     vendors = cursor.fetchall()
 
-    data = []
-    selected_vendor_type = None
+    data=[]
+    selected_vendor_type=None
 
-    if request.method == 'POST':
-        vendor_id = request.form.get('vendor_id')
-        from_date = request.form.get('from_date')
-        to_date = request.form.get('to_date')
+    # values GET किंवा POST मधून घे
+    vendor_id=request.values.get("vendor_id")
+    from_date=request.values.get("from_date")
+    to_date=request.values.get("to_date")
 
-        # Ownership + milk_type check
+    if vendor_id and from_date and to_date:
+
         cursor.execute("""
             SELECT milk_type
             FROM vendors
             WHERE vendor_id=%s AND user_id=%s
-        """, (vendor_id, session['id']))
-        vendor_info = cursor.fetchone()
+        """,(vendor_id,session['id']))
+
+        vendor_info=cursor.fetchone()
 
         if not vendor_info:
-            flash("Unauthorized vendor.", "danger")
-            return redirect(url_for('edit_entry'))
+            flash("Unauthorized vendor.","danger")
+            return redirect(url_for("edit_entry"))
 
-        selected_vendor_type = vendor_info["milk_type"]
+        selected_vendor_type=vendor_info["milk_type"]
 
-        start = datetime.strptime(from_date, "%Y-%m-%d")
-        end = datetime.strptime(to_date, "%Y-%m-%d")
+        start=datetime.strptime(from_date,"%Y-%m-%d")
+        end=datetime.strptime(to_date,"%Y-%m-%d")
 
-        d = start
-        while d <= end:
-            ds = d.strftime("%Y-%m-%d")
+        d=start
+
+        while d<=end:
+
+            ds=d.strftime("%Y-%m-%d")
 
             cursor.execute("""
                 SELECT
-                    (SELECT quantity FROM milk_collection 
-                     WHERE vendor_id=%s AND user_id=%s AND date=%s 
-                     AND slot='morning' AND milk_type='cow' LIMIT 1) AS cow_morning,
+                (SELECT quantity FROM milk_collection
+                 WHERE vendor_id=%s AND user_id=%s AND date=%s
+                 AND slot='morning' AND milk_type='cow' LIMIT 1) cow_morning,
 
-                    (SELECT quantity FROM milk_collection 
-                     WHERE vendor_id=%s AND user_id=%s AND date=%s 
-                     AND slot='evening' AND milk_type='cow' LIMIT 1) AS cow_evening,
+                (SELECT quantity FROM milk_collection
+                 WHERE vendor_id=%s AND user_id=%s AND date=%s
+                 AND slot='evening' AND milk_type='cow' LIMIT 1) cow_evening,
 
-                    (SELECT quantity FROM milk_collection 
-                     WHERE vendor_id=%s AND user_id=%s AND date=%s 
-                     AND slot='morning' AND milk_type='buffalo' LIMIT 1) AS buffalo_morning,
+                (SELECT quantity FROM milk_collection
+                 WHERE vendor_id=%s AND user_id=%s AND date=%s
+                 AND slot='morning' AND milk_type='buffalo' LIMIT 1) buffalo_morning,
 
-                    (SELECT quantity FROM milk_collection 
-                     WHERE vendor_id=%s AND user_id=%s AND date=%s 
-                     AND slot='evening' AND milk_type='buffalo' LIMIT 1) AS buffalo_evening,
+                (SELECT quantity FROM milk_collection
+                 WHERE vendor_id=%s AND user_id=%s AND date=%s
+                 AND slot='evening' AND milk_type='buffalo' LIMIT 1) buffalo_evening,
 
-                    (SELECT amount FROM advance 
-                     WHERE vendor_id=%s AND user_id=%s AND date=%s LIMIT 1) AS advance_amt
-            """, (vendor_id, session['id'], ds,
-                  vendor_id, session['id'], ds,
-                  vendor_id, session['id'], ds,
-                  vendor_id, session['id'], ds,
-                  vendor_id, session['id'], ds))
+                (SELECT amount FROM advance
+                 WHERE vendor_id=%s AND user_id=%s AND date=%s LIMIT 1) advance_amt
+            """,(vendor_id,session['id'],ds,
+                 vendor_id,session['id'],ds,
+                 vendor_id,session['id'],ds,
+                 vendor_id,session['id'],ds,
+                 vendor_id,session['id'],ds))
 
-            rec = cursor.fetchone() or {}
+            rec=cursor.fetchone() or {}
 
-            rec['date'] = ds
-            rec['cow_morning'] = rec.get('cow_morning') or 0
-            rec['cow_evening'] = rec.get('cow_evening') or 0
-            rec['buffalo_morning'] = rec.get('buffalo_morning') or 0
-            rec['buffalo_evening'] = rec.get('buffalo_evening') or 0
-            rec['advance_amt'] = rec.get('advance_amt') or 0
+            rec['date']=ds
+            rec['cow_morning']=rec.get('cow_morning') or 0
+            rec['cow_evening']=rec.get('cow_evening') or 0
+            rec['buffalo_morning']=rec.get('buffalo_morning') or 0
+            rec['buffalo_evening']=rec.get('buffalo_evening') or 0
+            rec['advance_amt']=rec.get('advance_amt') or 0
 
             data.append(rec)
-            d += timedelta(days=1)
+
+            d+=timedelta(days=1)
 
     return render_template(
-        'milk_operations/edit_entry.html',
+        "milk_operations/edit_entry.html",
         vendors=vendors,
         data=data,
         selected_vendor_type=selected_vendor_type
     )
+    
+    
 @app.route('/update_entries', methods=['POST'])
 def update_entries():
 
@@ -1299,7 +1240,12 @@ def update_entries():
 
     mysql.connection.commit()
     flash("Entries updated successfully.", "success")
-    return redirect(url_for("edit_entry"))
+    return redirect(url_for(
+    "edit_entry",
+    vendor_id=vendor_id,
+    from_date=from_date,
+    to_date=to_date
+))
 
 @app.route('/delete_entry', methods=['POST'])
 def delete_entry():
@@ -1342,7 +1288,12 @@ def delete_entry():
         mysql.connection.rollback()
         flash("Error deleting entry.", "danger")
 
-    return redirect(url_for('edit_entry'))
+    return redirect(url_for(
+    "edit_entry",
+    vendor_id=vendor_id,
+    from_date=request.form.get("from_date"),
+    to_date=request.form.get("to_date")
+))
 # ------------------------------
 # Receipts, calculation, payment (kept logic but with small safety)
 # ------------------------------
@@ -2086,4 +2037,4 @@ def healthcheck():
 
 
 if __name__ == "__main__":
-    app.run()
+    app.run(debug=True)

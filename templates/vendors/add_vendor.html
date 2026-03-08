@@ -8,9 +8,25 @@
   ग्राहक जोडा
 </h2>
 
+<!-- FLASH MESSAGE -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+    {% for category, message in messages %}
+        <div style="
+            padding:12px;
+            margin-bottom:15px;
+            border-radius:8px;
+            background:#ffebee;
+            color:#b71c1c;
+            font-weight:600;">
+            {{ message }}
+        </div>
+    {% endfor %}
+{% endif %}
+{% endwith %}
+
 <form method="POST"
-      class="section grid gap-4 max-w-lg"
-      onsubmit="return confirm('जर हा ID आधीच अस्तित्वात असेल तर बाकी vendors shift होतील. पुढे जायचं का?')">
+      class="section grid gap-4 max-w-lg">
 
     <!-- Vendor Name -->
     <div>
@@ -18,17 +34,18 @@
         <input type="text"
                name="name"
                placeholder="ग्राहकाचे नाव"
+               value="{{ name if name else '' }}"
                required
                class="form-input">
     </div>
 
-    <!-- Auto Vendor ID -->
+    <!-- Vendor ID -->
     <div>
         <label class="form-label">ग्राहक ID</label>
 
         <input type="number"
                name="vendor_id"
-               value="{{ next_vendor_id }}"
+               value="{{ vendor_id if vendor_id else next_vendor_id }}"
                required
                class="form-input">
 
@@ -42,6 +59,7 @@
         <label class="form-label">गाव</label>
         <input type="text"
                name="address"
+               value="{{ address if address else '' }}"
                placeholder="गाव"
                required
                class="form-input">
@@ -51,13 +69,22 @@
     <div>
         <label class="form-label">दूध प्रकार</label>
 
-        <select name="milk_type"
-                required
-                class="form-select">
+        <select name="milk_type" required class="form-select">
 
-            <option value="cow">गायीचे दूध</option>
-            <option value="buffalo">म्हशीचे दूध</option>
-            <option value="both">गाय - म्हैस</option>
+            <option value="cow"
+            {% if milk_type == 'cow' %}selected{% endif %}>
+            गायीचे दूध
+            </option>
+
+            <option value="buffalo"
+            {% if milk_type == 'buffalo' %}selected{% endif %}>
+            म्हशीचे दूध
+            </option>
+
+            <option value="both"
+            {% if milk_type == 'both' %}selected{% endif %}>
+            गाय - म्हैस
+            </option>
 
         </select>
     </div>
@@ -68,6 +95,7 @@
 
         <input type="text"
                name="phone"
+               value="{{ phone if phone else '' }}"
                placeholder="फोन नंबर"
                class="form-input">
     </div>
@@ -75,9 +103,7 @@
     <!-- Submit -->
     <button type="submit"
             class="btn btn-primary">
-
         ग्राहक जोडा
-
     </button>
 
 </form>
