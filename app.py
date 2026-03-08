@@ -23,7 +23,11 @@ load_dotenv()
 # Basic config & logging
 # ------------------------------
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY") 
+app.secret_key = os.getenv("SECRET_KEY", "d7e5f19e4c2a4a7b93c6f405f3d9a8c3b1a0c9e7e8d5f4c2a7b6f5e3a9d0c8f2") 
+
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 # MySQL configuration from environment
 app.config['MYSQL_HOST'] = os.getenv("MYSQL_HOST")
@@ -373,7 +377,7 @@ def require_login():
     """
     allowed = {
         'login', 'signup', 'verify_account', 'forgot_password',
-        'verify_reset_otp', 'reset_password', 'static', 'healthcheck'
+        'verify_reset_otp', 'reset_password', 'static', 'healthcheck', 'favicon'
     }
     if request.endpoint not in allowed and 'loggedin' not in session:
         return redirect(url_for('login'))
