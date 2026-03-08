@@ -86,6 +86,9 @@ def send_sms(to, body):
 
 
 def send_email(to, subject, body):
+    print("EMAIL_USER:", EMAIL_ADDRESS)
+    print("EMAIL_PASS:", EMAIL_PASSWORD)
+
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         logging.warning("Email not configured; email skipped.")
         return False
