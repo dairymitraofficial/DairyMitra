@@ -85,32 +85,35 @@ def send_sms(to, body):
         return False
 
 
+import threading
+
 def send_email(to, subject, body):
 
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         print("Email config missing")
         return False
 
-    try:
+    def _send():
+        try:
+            msg = EmailMessage()
+            msg["Subject"] = subject
+            msg["From"] = EMAIL_ADDRESS
+            msg["To"] = to
+            msg.set_content(body)
 
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = EMAIL_ADDRESS
-        msg["To"] = to
-        msg.set_content(body)
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
+                smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                smtp.send_message(msg)
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
-            smtp.ehlo()
-            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            smtp.send_message(msg)
+            print("EMAIL SENT SUCCESS")
 
-        print("EMAIL SENT SUCCESS")
-        return True
+        except Exception as e:
+            print("EMAIL ERROR:", str(e))
 
-    except Exception as e:
-        print("EMAIL ERROR:", str(e))
-        return False
+    # background thread
+    threading.Thread(target=_send).start()
 
+    return True
 def generate_otp(length=6):
     return ''.join(secrets.choice(string.digits) for _ in range(length))
 
@@ -238,10 +241,6 @@ def signup():
             "तुमचा OTP",
             f"तुमचा OTP: {otp}"
         )
-
-        if not email_sent:
-            flash("OTP email send झाला नाही. पुन्हा प्रयत्न करा.", "danger")
-            return redirect(url_for("signup"))
 
         flash('OTP sent. Please verify.', 'info')
 
