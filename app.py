@@ -105,10 +105,13 @@ def send_email(to, subject, body):
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
-            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            smtp.send_message(msg)
 
-        print("EMAIL SENT SUCCESSFULLY")
+            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            print("SMTP LOGIN SUCCESS")
+
+            smtp.send_message(msg)
+            print("EMAIL SENT SUCCESSFULLY")
+
         return True
 
     except Exception as e:
