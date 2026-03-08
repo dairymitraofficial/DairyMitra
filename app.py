@@ -34,7 +34,7 @@ app.config['MYSQL_HOST'] = os.getenv("MYSQL_HOST")
 app.config['MYSQL_USER'] = os.getenv("MYSQL_USER")
 app.config['MYSQL_PASSWORD'] = os.getenv("MYSQL_PASSWORD")
 app.config['MYSQL_DB'] = os.getenv("MYSQL_DB")
-app.config["MYSQL_PORT"] = int(os.getenv("MYSQL_PORT"))
+app.config["MYSQL_PORT"] = int(os.getenv("MYSQL_PORT", 3306))
 mysql = MySQL(app)
 
 # Twilio
@@ -87,31 +87,28 @@ def send_sms(to, body):
 
 def send_email(to, subject, body):
 
-    print("EMAIL_USER:", EMAIL_ADDRESS)
-    print("EMAIL_PASS:", EMAIL_PASSWORD)
-
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-        print("Email not configured")
+        print("Email config missing")
         return False
 
     try:
 
         msg = EmailMessage()
-        msg.set_content(body)
         msg["Subject"] = subject
         msg["From"] = EMAIL_ADDRESS
         msg["To"] = to
+        msg.set_content(body)
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+            smtp.ehlo()
             smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             smtp.send_message(msg)
 
         print("EMAIL SENT SUCCESS")
-
         return True
 
     except Exception as e:
-        print("EMAIL ERROR:", e)
+        print("EMAIL ERROR:", str(e))
         return False
 
 def generate_otp(length=6):
@@ -137,46 +134,7 @@ def ensure_user_id_int():
         return session.get('id')
 
 
-def _get_date_slot_from_request(req):
-    """
-    Prefer data in this order:
-     - JSON payload (for AJAX)
-     - form fields
-     - query params
-     - defaults (today, morning)
-    Return: (date_str 'YYYY-MM-DD', slot 'morning'|'evening')
-    """
-    date_val = None
-    slot_val = None
-    try:
-        if req.is_json:
-            j = req.get_json(silent=True) or {}
-            date_val = j.get('date') or j.get('selected_date') or None
-            slot_val = j.get('slot') or j.get('selected_slot') or None
-    except Exception:
-        pass
 
-    if not date_val:
-        date_val = req.form.get('date') or req.args.get('date')
-    if not slot_val:
-        slot_val = req.form.get('slot') or req.args.get('slot')
-
-    # validate date
-    try:
-        if date_val:
-            _ = datetime.strptime(date_val, "%Y-%m-%d")
-        else:
-            date_val = date.today().isoformat()
-    except Exception:
-        date_val = date.today().isoformat()
-
-    if slot_val not in ('morning', 'evening'):
-        slot_val = 'morning'
-
-    return date_val, slot_val
-
-
-from functools import wraps   # वर import मध्ये add कर
 
 
 
@@ -275,12 +233,15 @@ def signup():
             'otp': otp
         }
 
-        # SEND EMAIL (no thread)
-        send_email(
+        email_sent = send_email(
             email,
-            'तुमचा OTP',
+            "तुमचा OTP",
             f"तुमचा OTP: {otp}"
         )
+
+        if not email_sent:
+            flash("OTP email send झाला नाही. पुन्हा प्रयत्न करा.", "danger")
+            return redirect(url_for("signup"))
 
         flash('OTP sent. Please verify.', 'info')
 
@@ -400,7 +361,7 @@ def require_login():
         'login', 'signup', 'verify_account', 'forgot_password',
         'verify_reset_otp', 'reset_password', 'static', 'healthcheck', 'favicon'
     }
-    if request.endpoint not in allowed and 'loggedin' not in session:
+    if request.endpoint and request.endpoint not in allowed and 'loggedin' not in session:
         return redirect(url_for('login'))
     if 'id' in session:
         ensure_user_id_int()
@@ -2126,4 +2087,4 @@ def healthcheck():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()
