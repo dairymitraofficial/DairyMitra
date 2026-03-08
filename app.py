@@ -228,18 +228,21 @@ def logout():
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
+
     if 'loggedin' in session:
         return redirect(url_for('dashboard'))
 
     if request.method == 'POST':
+
         dairy_name = request.form.get('dairy_name', '').strip()
         email = request.form.get('email')
         password = request.form.get('password')
         confirm_password = request.form.get('confirm_password')
         phone = request.form.get('phone', '').strip()
 
-        # ✅ पासवर्ड पॅटर्न चेक: किमान 8, एक अक्षर, एक अंक, एक symbol
+        # password validation
         password_pattern = r'^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$'
+
         if not re.match(password_pattern, password):
             flash('पासवर्ड किमान 8 अक्षरे असावा, त्यात अक्षरे, अंक आणि symbol असणे आवश्यक आहे.', 'danger')
             return redirect(url_for('signup'))
@@ -253,31 +256,39 @@ def signup():
             return redirect(url_for('signup'))
 
         cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-        cursor.execute('SELECT id FROM users WHERE email = %s', (email,))
+
+        cursor.execute(
+            "SELECT id FROM users WHERE email = %s",
+            (email,)
+        )
+
         if cursor.fetchone():
             flash('Account already exists!', 'warning')
             return redirect(url_for('signup'))
 
+        # OTP generate
         otp = generate_otp()
-        hashed = generate_password_hash(password)
+
+        hashed_password = generate_password_hash(password)
+
+        # temporarily store signup data
         session['temp_signup'] = {
             'email': email,
-            'password': hashed,
+            'password': hashed_password,
             'phone': phone,
             'dairy_name': dairy_name,
             'otp': otp
         }
-        try:
-            import threading
 
-            threading.Thread(
-                target=send_email,
-                args=(email, 'तुमचा OTP', f"तुमचा OTP: {otp}"),
-                daemon=True
-            ).start()
-        except Exception as e:
-            logging.exception("OTP email failed")
+        # SEND EMAIL (no thread)
+        send_email(
+            email,
+            'तुमचा OTP',
+            f"तुमचा OTP: {otp}"
+        )
+
         flash('OTP sent. Please verify.', 'info')
+
         return redirect(url_for('verify_account'))
 
     return render_template('auth/signup.html')
