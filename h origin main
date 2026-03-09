@@ -1,0 +1,17 @@
+[33m26b1068[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m Added offline milk collection feature and service worker improvements
+[33m5409168[m Edit entry page fixes, vendor validation improvements
+[33m9ed6ec7[m eye button on html
+[33m598bce9[m add brevo email api
+[33m825c760[m fix render smtp worker timeout
+[33m4345bb4[m fix otp email + smtp + mysql port
+[33m047fa57[m debug is true
+[33m99e7280[m fix smtp ssl
+[33m54438fa[m fix otp email issue
+[33md3254ef[m email smtp debug
+[33m1186e96[m debug email error
+[33m841c0fc[m fix smtp for render
+[33m0891460[m debug email env variables
+[33md876e81[m fix session cookie issue for OTP verification
+[33m04ec60c[m fix otp worker timeout
+[33ma792d3c[m Initial commit - DairyMitra project
+[33mbb44bce[m Initial commit - Dairy Mitra project
