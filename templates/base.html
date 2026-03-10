@@ -51,6 +51,13 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- GLOBAL LOADER -->
+<div id="global-loader">
+  <div class="loader-box">
+    <div class="spinner"></div>
+    Processing...
+  </div>
+</div>
   {% block scripts %}{% endblock %}
 
   <!-- Sidebar Script -->
@@ -204,6 +211,24 @@ document.documentElement.setAttribute("data-theme","dark")
 }
 
 </script>
+<script>
 
+function showLoader(){
+  const loader=document.getElementById("global-loader");
+  if(loader) loader.style.display="flex";
+}
+
+function hideLoader(){
+  const loader=document.getElementById("global-loader");
+  if(loader) loader.style.display="none";
+}
+
+document.querySelectorAll("form").forEach(form=>{
+  form.addEventListener("submit",()=>{
+      showLoader();
+  });
+});
+
+</script>
 </body>
 </html>

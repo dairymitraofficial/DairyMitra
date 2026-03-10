@@ -5,23 +5,25 @@
 <h2 class="page-title">📝 नोंदी संपादित करा</h2>
 
 <div class="mb-4">
-  <a href="{{ url_for('edit_food_sack') }}" class="btn-pro btn-pro-edit">
-    खाद्य पोती नोंदी व्यवस्थापन
-  </a>
+<a href="{{ url_for('edit_food_sack') }}" class="btn-pro btn-pro-edit">
+खाद्य पोती नोंदी व्यवस्थापन
+</a>
 </div>
 
 <!-- SEARCH FORM -->
-<form method="POST" class="section mb-4 flex flex-wrap gap-3 items-end">
+<form method="GET" class="section mb-4 flex flex-wrap gap-3 items-end">
 
 <div>
 <label class="form-label">विक्रेता:</label>
 
 <select name="vendor_id" required class="form-select">
 
+{% set selected_vendor = request.values.get('vendor_id') %}
+
 {% for v in vendors %}
 
 <option value="{{ v.vendor_id }}"
-{% if request.form.vendor_id == v.vendor_id|string %}selected{% endif %}>
+{% if selected_vendor == v.vendor_id|string %}selected{% endif %}>
 
 {{ v.name }}
 
@@ -38,7 +40,7 @@
 
 <input type="date"
 name="from_date"
-value="{{ request.form.from_date }}"
+value="{{ request.values.get('from_date','') }}"
 required
 class="form-input">
 
@@ -50,7 +52,7 @@ class="form-input">
 
 <input type="date"
 name="to_date"
-value="{{ request.form.to_date }}"
+value="{{ request.values.get('to_date','') }}"
 required
 class="form-input">
 
@@ -72,10 +74,9 @@ class="form-input">
 <!-- UPDATE FORM -->
 <form method="POST" action="{{ url_for('update_entries') }}" class="section">
 
-<input type="hidden" name="vendor_id" value="{{ request.form.vendor_id }}">
-<input type="hidden" name="from_date" value="{{ request.form.from_date }}">
-<input type="hidden" name="to_date" value="{{ request.form.to_date }}">
-
+<input type="hidden" name="vendor_id" value="{{ request.values.get('vendor_id') }}">
+<input type="hidden" name="from_date" value="{{ request.values.get('from_date') }}">
+<input type="hidden" name="to_date" value="{{ request.values.get('to_date') }}">
 
 <div class="table-wrap">
 
@@ -101,7 +102,6 @@ class="form-input">
 
 <td>{{ row.date }}</td>
 
-
 <!-- Cow Morning -->
 <td>
 <input type="number"
@@ -111,7 +111,6 @@ value="{{ row.cow_morning }}"
 class="form-input"
 {% if selected_vendor_type == 'buffalo' %}disabled{% endif %}>
 </td>
-
 
 <!-- Cow Evening -->
 <td>
@@ -123,7 +122,6 @@ class="form-input"
 {% if selected_vendor_type == 'buffalo' %}disabled{% endif %}>
 </td>
 
-
 <!-- Buffalo Morning -->
 <td>
 <input type="number"
@@ -133,7 +131,6 @@ value="{{ row.buffalo_morning }}"
 class="form-input"
 {% if selected_vendor_type == 'cow' %}disabled{% endif %}>
 </td>
-
 
 <!-- Buffalo Evening -->
 <td>
@@ -145,7 +142,6 @@ class="form-input"
 {% if selected_vendor_type == 'cow' %}disabled{% endif %}>
 </td>
 
-
 <!-- Advance -->
 <td>
 <input type="number"
@@ -155,8 +151,7 @@ value="{{ row.advance_amt }}"
 class="form-input">
 </td>
 
-
-<!-- DELETE BUTTON -->
+<!-- DELETE -->
 <td>
 
 <button
@@ -198,15 +193,15 @@ action="{{ url_for('delete_entry') }}">
 
 <input type="hidden"
 name="vendor_id"
-value="{{ request.form.vendor_id }}">
+value="{{ request.values.get('vendor_id') }}">
 
 <input type="hidden"
 name="from_date"
-value="{{ request.form.from_date }}">
+value="{{ request.values.get('from_date') }}">
 
 <input type="hidden"
 name="to_date"
-value="{{ request.form.to_date }}">
+value="{{ request.values.get('to_date') }}">
 
 <input type="hidden"
 name="date"

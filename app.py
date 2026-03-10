@@ -1380,7 +1380,13 @@ WHERE user_id = %s
 ORDER BY vendor_id ASC
 """, (session['id'],))
     vendors = cursor.fetchall()
-    cursor.execute("SELECT * FROM food_sack_rates WHERE user_id = %s ORDER BY name", (session['id'],))
+    cursor.execute("""
+SELECT *
+FROM food_sack_rates
+WHERE user_id = %s
+AND is_active = 1
+ORDER BY name
+""", (session['id'],))
     sack_rates = cursor.fetchall()
     if request.method == 'POST':
         entry_date = request.form.get('date') or date.today().isoformat()
@@ -1413,8 +1419,8 @@ ORDER BY vendor_id ASC
                 cursor.execute("UPDATE food_sack SET sack_qty=%s, total_cost=%s, sack_rate_id=%s WHERE id=%s",
                                (new_qty, new_total, sack_id_i, existing['id']))
             else:
-                cursor.execute("INSERT INTO food_sack (vendor_id, user_id, date, sack_qty, sack_rate_id, total_cost) VALUES (%s,%s,%s,%s,%s,%s)",
-                               (vid, session['id'], entry_date, qty_i, sack_id_i, total))
+                cursor.execute("INSERT INTO food_sack (vendor_id, user_id, date, sack_qty, sack_rate_id, sack_rate, total_cost) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                               (vid, session['id'], entry_date, qty_i, sack_id_i, rate, total))
         mysql.connection.commit()
         audit_log(session['id'], 'food_sack_update', f"date={entry_date}")
         flash('Food sack data saved.', 'success')
@@ -1444,52 +1450,129 @@ def add_food_sack():
 
 @app.route('/food_sack_rate', methods=['GET', 'POST'])
 def food_sack_rate():
+
     if 'id' not in session:
         return redirect(url_for('login'))
+
     cursor = SafeCursor(mysql.connection.cursor())
+
     if request.method == 'POST':
+
         name = request.form.get('name')
         rate = request.form.get('rate')
         date_from = datetime.today().date()
-        cursor.execute("INSERT INTO food_sack_rates (user_id, name, rate, date_from) VALUES (%s,%s,%s,%s)",
-                       (session['id'], name, rate, date_from))
+
+        cursor.execute("""
+        INSERT INTO food_sack_rates
+        (user_id,name,rate,date_from)
+        VALUES(%s,%s,%s,%s)
+        """,(session['id'],name,rate,date_from))
+
         mysql.connection.commit()
+
         audit_log(session['id'], 'add_food_sack_rate', f"{name} {rate}")
+
         flash('Added.', 'success')
+
         return redirect(url_for('food_sack_rate'))
-    cursor.execute("SELECT id, name, rate, date_from FROM food_sack_rates WHERE user_id=%s ORDER BY date_from DESC", (session['id'],))
+
+    # ⚡ optimized select
+    cursor.execute("""
+    SELECT id,name,rate,date_from
+    FROM food_sack_rates
+    WHERE user_id=%s
+    AND is_active=1
+    ORDER BY name
+    """,(session['id'],))
+
     rates = cursor.fetchall()
-    return render_template('rates/food_sack_rate.html', food_sacks=rates)
 
+    cursor.close()
 
+    return render_template(
+        'rates/food_sack_rate.html',
+        food_sacks=rates
+    )
+    
+    
 @app.route('/update_food_sack_rate', methods=['POST'])
 def update_food_sack_rate():
+
     if 'id' not in session:
         return redirect(url_for('login'))
+
     sack_id = request.form.get('sack_id')
     new_rate = request.form.get('new_rate')
     date_from = request.form.get('date_from')
+
     cursor = SafeCursor(mysql.connection.cursor())
-    cursor.execute("UPDATE food_sack_rates SET rate=%s, date_from=%s WHERE id=%s AND user_id=%s", (new_rate, date_from, sack_id, session['id']))
+
+    cursor.execute("""
+    SELECT name
+    FROM food_sack_rates
+    WHERE id=%s
+    AND user_id=%s
+    LIMIT 1
+    """,(sack_id,session['id']))
+
+    sack = cursor.fetchone()
+
+    if not sack:
+        flash("Invalid sack.", "danger")
+        return redirect(url_for('food_sack_rate'))
+
+    name = sack['name']
+
+    # ⚡ insert new rate (history safe)
+    cursor.execute("""
+    INSERT INTO food_sack_rates
+    (user_id,name,rate,date_from)
+    VALUES(%s,%s,%s,%s)
+    """,(session['id'],name,new_rate,date_from))
+
     mysql.connection.commit()
-    audit_log(session['id'], 'update_food_sack_rate', f"id={sack_id}")
-    flash('Updated.', 'success')
+
+    audit_log(session['id'], 'update_food_sack_rate', f"name={name} rate={new_rate}")
+
+    flash("New rate applied.", "success")
+
     return redirect(url_for('food_sack_rate'))
 
 @app.route('/delete_food_sack_rate/<int:sack_id>', methods=['POST'])
 def delete_food_sack_rate(sack_id):
+
     if 'id' not in session:
         return redirect(url_for('login'))
 
     cursor = SafeCursor(mysql.connection.cursor())
-    cursor.execute("DELETE FROM food_sack_rates WHERE id=%s AND user_id=%s", (sack_id, session['id']))
+
+    # check if sack exists
+    cursor.execute("""
+        SELECT id
+        FROM food_sack_rates
+        WHERE id=%s AND user_id=%s
+    """, (sack_id, session['id']))
+
+    sack = cursor.fetchone()
+
+    if not sack:
+        flash("खाद्य पोती दर सापडला नाही.", "danger")
+        return redirect(url_for('food_sack_rate'))
+
+    # SOFT DELETE
+    cursor.execute("""
+        UPDATE food_sack_rates
+        SET is_active = 0
+        WHERE id=%s AND user_id=%s
+    """, (sack_id, session['id']))
+
     mysql.connection.commit()
 
     audit_log(session['id'], 'delete_food_sack_rate', f"id={sack_id}")
+
     flash('खाद्य पोती दर काढण्यात आला.', 'success')
+
     return redirect(url_for('food_sack_rate'))
-
-
 # ------------------------------
 # Edit Entry & safer update_entries
 # ------------------------------
@@ -1515,9 +1598,9 @@ def edit_entry():
     data=[]
     selected_vendor_type=None
 
-    vendor_id=request.values.get("vendor_id")
-    from_date=request.values.get("from_date")
-    to_date=request.values.get("to_date")
+    vendor_id=request.args.get("vendor_id")
+    from_date=request.args.get("from_date")
+    to_date=request.args.get("to_date")
 
     if vendor_id and from_date and to_date:
 
@@ -2046,7 +2129,7 @@ def receipt_all_vendors():
         return redirect(url_for('login'))
 
     user_id = int(session['id'])
-    cursor = mysql.connection.cursor()
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
     if request.method == 'POST':
 
@@ -2073,6 +2156,7 @@ def receipt_all_vendors():
             WHERE user_id=%s
             AND date BETWEEN %s AND %s
         """, (user_id, from_date, to_date))
+
         milk_rows = cursor.fetchall()
 
         milk_map = {}
@@ -2084,13 +2168,20 @@ def receipt_all_vendors():
         # LOAD FOOD SACK
         # -------------------------
         cursor.execute("""
-            SELECT fs.vendor_id, fs.sack_qty, r.name, r.rate,
-                   (fs.sack_qty * r.rate) AS total
+            SELECT
+                fs.vendor_id,
+                fs.sack_qty,
+                r.name,
+                fs.sack_rate AS rate,
+                fs.total_cost AS total
             FROM food_sack fs
-            JOIN food_sack_rates r ON fs.sack_rate_id = r.id
+            JOIN food_sack_rates r
+            ON r.id = fs.sack_rate_id
             WHERE fs.user_id=%s
             AND fs.date BETWEEN %s AND %s
-        """, (user_id, from_date, to_date))
+            ORDER BY fs.vendor_id
+            """,(user_id,from_date,to_date))
+
         food_rows = cursor.fetchall()
 
         food_map = {}
@@ -2115,27 +2206,6 @@ def receipt_all_vendors():
         }
 
         # -------------------------
-        # LOAD GLOBAL MILK RATES (FAST)
-        # -------------------------
-        cursor.execute("""
-            SELECT animal, rate
-            FROM milk_rates
-            WHERE user_id=%s
-            ORDER BY date_from DESC
-        """, (user_id,))
-
-        rate_rows = cursor.fetchall()
-
-        cow_rate = 0
-        buffalo_rate = 0
-
-        for r in rate_rows:
-            if r['animal'] == 'cow' and cow_rate == 0:
-                cow_rate = float(r['rate'])
-            if r['animal'] == 'buffalo' and buffalo_rate == 0:
-                buffalo_rate = float(r['rate'])
-
-        # -------------------------
         # PROCESS VENDORS
         # -------------------------
         all_receipts = []
@@ -2143,6 +2213,11 @@ def receipt_all_vendors():
         for vendor in vendors:
 
             vid = int(vendor['vendor_id'])
+
+            # ⭐ vendor special rate (only once)
+            cow_rate = get_vendor_rate(cursor, vid, "cow", from_date)
+            buffalo_rate = get_vendor_rate(cursor, vid, "buffalo", from_date)
+
             milk_data = milk_map.get(vid, [])
 
             grouped = {}
@@ -2244,6 +2319,7 @@ def receipt_all_vendors():
         )
 
     cursor.close()
+
     return render_template(
         'receipt_all_vendors.html',
         receipts=None
@@ -2269,7 +2345,7 @@ def edit_food_sack():
     if request.method == "POST":
         selected_vendor_id = request.form.get("vendor_id")
         cursor.execute("""
-            SELECT fs.id, fs.date, r.name AS company_name, fs.sack_qty, r.rate, (fs.sack_qty * r.rate) AS total
+            SELECT fs.id, fs.date, r.name AS company_name, fs.sack_qty, r.rate, (fs.sack_qty * fs.sack_rate) AS total
             FROM food_sack fs
             JOIN food_sack_rates r ON fs.sack_rate_id = r.id
             WHERE fs.vendor_id=%s AND fs.user_id=%s
@@ -2453,11 +2529,12 @@ def vendor_range_summary():
 
             for row in data:
                 key = f"{row['milk_type']}_{row['slot']}"
-                summary[key] = row["total_qty"] or 0
+                summary[key] = round(row["total_qty"] or 0, 1)
 
             summary["cow_total"] = summary["cow_morning"] + summary["cow_evening"]
             summary["buffalo_total"] = summary["buffalo_morning"] + summary["buffalo_evening"]
-
+            for k in grand_totals:
+                grand_totals[k] = round(grand_totals[k], 1)
             # ADD INTO GRAND TOTALS
             grand_totals["cow_morning"] += summary["cow_morning"]
             grand_totals["cow_evening"] += summary["cow_evening"]
