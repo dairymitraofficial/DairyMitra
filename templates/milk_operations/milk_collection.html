@@ -243,7 +243,7 @@ function submitVendorMilk(index, forceSave=false) {
     const vendor_id = document.getElementById('vendor_id_' + index).value;
     const milk_type = document.getElementById('milk_type_' + index).value;
     const quantity = document.getElementById('quantity_' + index).value;
-    const date = document.getElementById('selected_date').value;
+    const date = document.querySelector('input[name="date"]').value;
     const slot = document.querySelector('select[name="slot"]').value;
 
     if (!quantity) {
@@ -330,7 +330,7 @@ function submitVendorMilk(index, forceSave=false) {
 function finalSubmit() {
 
     const rows = document.querySelectorAll("#vendorTable tbody tr");
-    const date = document.getElementById('selected_date').value;
+    const date = document.querySelector('input[name="date"]').value;
     const slot = document.querySelector('select[name="slot"]').value;
 
     let data = [];

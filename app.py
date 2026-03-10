@@ -1007,20 +1007,17 @@ def delete_milk_rate(rate_id):
 
 
 def _get_date_slot_from_request(req):
-    """Date/Slot काढून देतो, user input नसेल तर auto slot वापरतो."""
+
     date_val = req.form.get("date") or req.args.get("date")
     slot_val = req.form.get("slot") or req.args.get("slot")
 
-    # Date fallback
-    try:
-        if not date_val:
-            date_val = date.today().isoformat()
-        else:
-            _ = datetime.strptime(date_val, "%Y-%m-%d")
-    except Exception:
-        date_val = date.today().isoformat()
+    today = date.today().isoformat()
 
-    # Slot fallback
+    # अगर date नसली किंवा जुनी असेल → आजची date
+    if not date_val or date_val < today:
+        date_val = today
+
+    # slot validation
     if slot_val not in ("morning", "evening"):
         slot_val = _auto_slot()
 
@@ -1032,26 +1029,25 @@ def _get_date_slot_from_request(req):
 
 @app.route('/milk_collection', methods=['GET', 'POST'])
 def milk_collection():
-    """
-    Page to render vendor list and allow per-vendor AJAX submission or bulk submission.
-    Uses hidden selected_date / selected_slot in template (JS sets these).
-    """
 
-    # ⚡ vendors आता cache मधून येतील
     vendors = get_vendors_cached(session['id'])
 
-    # derive default date & slot from query/form/JSON
+    # GET / POST मधून date आणि slot घ्या
     today_date, current_slot = _get_date_slot_from_request(request)
 
-    # if user changed date via the small form, redirect to GET with query params
     if request.method == 'POST' and 'set_date_slot' in request.form:
+
         date_val = request.form.get('date') or date.today().isoformat()
         slot_val = request.form.get('slot')
 
         if slot_val not in ("morning", "evening"):
-            slot_val = _auto_slot()   # fallback to auto slot
+            slot_val = _auto_slot()
 
-        return redirect(url_for('milk_collection', date=date_val, slot=slot_val))
+        return redirect(url_for(
+            'milk_collection',
+            date=date_val,
+            slot=slot_val
+        ))
 
     return render_template(
         'milk_operations/milk_collection.html',
@@ -1061,7 +1057,6 @@ def milk_collection():
         selected_date=today_date,
         selected_slot=current_slot
     )
-
 
 @app.route('/submit_milk_ajax', methods=['POST'])
 def submit_milk_ajax():
@@ -2167,13 +2162,13 @@ def receipt_all_vendors():
         # -------------------------
         # LOAD FOOD SACK
         # -------------------------
-        cursor.execute("""
+            cursor.execute("""
             SELECT
                 fs.vendor_id,
                 fs.sack_qty,
                 r.name,
-                fs.sack_rate AS rate,
-                fs.total_cost AS total
+                COALESCE(fs.sack_rate,0) AS rate,
+                COALESCE(fs.total_cost,0) AS total
             FROM food_sack fs
             JOIN food_sack_rates r
             ON r.id = fs.sack_rate_id
@@ -2266,9 +2261,9 @@ def receipt_all_vendors():
             food_sack_details = [
                 {
                     "name": f['name'],
-                    "rate": float(f['rate']),
-                    "qty": int(f['sack_qty']),
-                    "total": float(f['total'])
+                    "rate": float(f['rate'] or 0),
+                    "qty": int(f['sack_qty'] or 0),
+                    "total": float(f['total'] or 0)
                 }
                 for f in food_data
             ]
