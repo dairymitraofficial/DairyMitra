@@ -389,12 +389,15 @@ function finalSubmit() {
 ================================ */
 window.addEventListener("DOMContentLoaded", function() {
 
-    const hour = new Date().getHours();
     const slotSelect = document.querySelector('select[name="slot"]');
 
-    if (slotSelect) {
+    if (slotSelect && !slotSelect.value) {
+
+        const hour = new Date().getHours();
+
         slotSelect.value = hour < 15 ? "morning" : "evening";
-    }
+
+    }   
 
     const total = {{ vendors|length }};
 

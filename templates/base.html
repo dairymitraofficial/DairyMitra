@@ -195,5 +195,15 @@ window.addEventListener("beforeinstallprompt", (e) => {
 });
 </script>
 
+<script>
+
+const savedTheme = localStorage.getItem("theme")
+
+if(savedTheme === "dark"){
+document.documentElement.setAttribute("data-theme","dark")
+}
+
+</script>
+
 </body>
 </html>
