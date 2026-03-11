@@ -1,6 +1,9 @@
 import os
 import subprocess
+import gzip
+import shutil
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,80 +14,101 @@ DB_USER = os.getenv("MYSQL_USER")
 DB_PASS = os.getenv("MYSQL_PASSWORD")
 DB_NAME = os.getenv("MYSQL_DB")
 
+BACKUP_DIR = "backups"
 
-# ----------------------------
-# CREATE USER BACKUP
-# ----------------------------
-def create_user_backup(user_id):
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
-    os.makedirs("backups", exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"user_{user_id}_backup_{timestamp}.sql"
-    filepath = os.path.join("backups", filename)
+# -------------------------------------------------
+# TIME (KOLKATA / IST)
+# -------------------------------------------------
+
+def get_timestamp():
+    return datetime.now(
+        ZoneInfo("Asia/Kolkata")
+    ).strftime("%Y%m%d_%H%M%S")
+
+
+# -------------------------------------------------
+# CREATE MYSQL BACKUP (FAST + COMPRESSED)
+# -------------------------------------------------
+
+def create_backup(backup_type="manual", user_id=1):
+
+    timestamp = get_timestamp()
+
+    sql_file = os.path.join(
+        BACKUP_DIR,
+        f"{backup_type}_user{user_id}_{timestamp}_IST.sql"
+    )
+
+    gzip_file = sql_file + ".gz"
 
     command = [
         "mysqldump",
+        "--single-transaction",
+        "--quick",
+        "--skip-lock-tables",
+        "--set-gtid-purged=OFF",
         "-h", DB_HOST,
         "-P", str(DB_PORT),
         "-u", DB_USER,
         f"-p{DB_PASS}",
-        DB_NAME,
-        "--no-create-info",
-        "--skip-triggers"
+        DB_NAME
     ]
 
-    with open(filepath, "w") as f:
-        subprocess.run(command, stdout=f, check=True)
+    try:
 
-    return filename
+        print("Starting database backup...")
+
+        with open(sql_file, "w") as f:
+            subprocess.run(command, stdout=f, check=True)
+
+        print("Compressing backup...")
+
+        with open(sql_file, "rb") as f_in:
+            with gzip.open(gzip_file, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+        os.remove(sql_file)
+
+        cleanup_old_backups()
+
+        print("Backup created:", gzip_file)
+
+        return os.path.basename(gzip_file)
+
+    except subprocess.CalledProcessError as e:
+
+        print("Backup failed:", e)
+
+        if os.path.exists(sql_file):
+            os.remove(sql_file)
+
+        raise
 
 
-# ----------------------------
-# FULL DATABASE BACKUP
-# ----------------------------
+# -------------------------------------------------
+# FULL DATABASE BACKUP (ADMIN)
+# -------------------------------------------------
+
 def create_full_backup():
 
-    os.makedirs("backups", exist_ok=True)
+    timestamp = get_timestamp()
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"full_backup_{timestamp}.sql"
-    filepath = os.path.join("backups", filename)
+    sql_file = os.path.join(
+        BACKUP_DIR,
+        f"admin_full_{timestamp}_IST.sql"
+    )
 
-    command = [
-        "mysqldump",
-        "--single-transaction",
-        "--quick",
-        "--lock-tables=false",
-        "-h", DB_HOST,
-        "-P", str(DB_PORT),
-        "-u", DB_USER,
-        f"-p{DB_PASS}",
-        DB_NAME
-    ]
-
-    with open(filepath, "w") as f:
-        subprocess.run(command, stdout=f, check=True)
-
-    return filename
-
-
-# ----------------------------
-# SIMPLE BACKUP
-# ----------------------------
-def create_backup():
-
-    os.makedirs("backups", exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"backup_{timestamp}.sql"
-    filepath = os.path.join("backups", filename)
+    gzip_file = sql_file + ".gz"
 
     command = [
         "mysqldump",
         "--single-transaction",
         "--quick",
-        "--lock-tables=false",
+        "--skip-lock-tables",
+        "--set-gtid-purged=OFF",
         "-h", DB_HOST,
         "-P", str(DB_PORT),
         "-u", DB_USER,
@@ -92,64 +116,49 @@ def create_backup():
         DB_NAME
     ]
 
-    with open(filepath, "w") as f:
+    with open(sql_file, "w") as f:
         subprocess.run(command, stdout=f, check=True)
 
-    return filename
+    with open(sql_file, "rb") as f_in:
+        with gzip.open(gzip_file, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    os.remove(sql_file)
+
+    cleanup_old_backups()
+
+    return os.path.basename(gzip_file)
 
 
-# ----------------------------
-# GOOGLE DRIVE UPLOAD (dummy)
-# ----------------------------
-def upload_to_drive(file):
-    print("Uploading to drive:", file)
+# -------------------------------------------------
+# RESTORE BACKUP
+# -------------------------------------------------
 
+def restore_backup(filename):
 
-# ----------------------------
-# AUTOMATIC BACKUP
-# ----------------------------
-def automatic_backup():
+    filepath = os.path.join(BACKUP_DIR, filename)
 
-    print("Running automatic backup...")
+    if not os.path.exists(filepath):
+        raise Exception("Backup file not found")
 
-    filename = create_backup()
+    # -------------------------------------------------
+    # SAFETY BACKUP BEFORE RESTORE
+    # -------------------------------------------------
 
-    upload_to_drive(filename)
+    safety_name = create_backup("safety", 1)
+    print("Safety backup created:", safety_name)
 
-    print("Automatic backup completed")
+    temp_sql = filepath.replace(".gz", ".sql")
 
+    print("Extracting backup...")
 
-# ----------------------------
-# RESTORE USER BACKUP
-# ----------------------------
-def restore_user_backup(filepath, user_id):
+    with gzip.open(filepath, "rb") as f_in:
+        with open(temp_sql, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
 
-    os.makedirs("backups", exist_ok=True)
-
-    # safety backup
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safety_file = f"backups/safety_backup_user_{user_id}_{timestamp}.sql"
-
-    dump_command = [
-        "mysqldump",
-        "--single-transaction",
-        "--quick",
-        "--lock-tables=false",
-        "-h", DB_HOST,
-        "-P", str(DB_PORT),
-        "-u", DB_USER,
-        f"-p{DB_PASS}",
-        DB_NAME
-    ]
-
-    with open(safety_file, "w") as f:
-        subprocess.run(dump_command, stdout=f, check=True)
-
-    print("Safety backup created:", safety_file)
-
-    # restore
-    restore_command = [
+    command = [
         "mysql",
+        "--max_allowed_packet=512M",
         "-h", DB_HOST,
         "-P", str(DB_PORT),
         "-u", DB_USER,
@@ -157,9 +166,53 @@ def restore_user_backup(filepath, user_id):
         DB_NAME
     ]
 
-    with open(filepath, "rb") as sql_file:
-        subprocess.run(restore_command, stdin=sql_file, check=True)
+    print("Restoring database...")
+
+    with open(temp_sql, "rb") as sql_file:
+        subprocess.run(command, stdin=sql_file, check=True)
+
+    os.remove(temp_sql)
 
     print("Restore completed")
 
     return True
+
+
+# -------------------------------------------------
+# CLEANUP OLD BACKUPS
+# -------------------------------------------------
+
+def cleanup_old_backups():
+
+    files = sorted(
+        os.listdir(BACKUP_DIR),
+        key=lambda x: os.path.getmtime(os.path.join(BACKUP_DIR, x))
+    )
+
+    while len(files) > 30:
+
+        oldest = files[0]
+        filepath = os.path.join(BACKUP_DIR, oldest)
+
+        try:
+            os.remove(filepath)
+            print("Deleted old backup:", oldest)
+        except Exception as e:
+            print("Delete error:", e)
+
+        files.pop(0)
+
+
+# -------------------------------------------------
+# BACKUP HISTORY
+# -------------------------------------------------
+
+def list_backups():
+
+    files = sorted(
+        os.listdir(BACKUP_DIR),
+        key=lambda x: os.path.getmtime(os.path.join(BACKUP_DIR, x)),
+        reverse=True
+    )
+
+    return files

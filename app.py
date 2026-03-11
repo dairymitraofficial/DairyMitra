@@ -31,8 +31,7 @@ from functools import lru_cache
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from backup_system import  create_user_backup,  restore_user_backup, create_full_backup, create_backup, upload_to_drive, automatic_backup
-
+from backup_system import create_backup, create_full_backup, restore_backup, list_backups
 
 load_dotenv()
 
@@ -2120,6 +2119,7 @@ def payment():
 @app.route('/receipt_all_vendors', methods=['GET', 'POST'])
 def receipt_all_vendors():
 
+
     if 'id' not in session:
         return redirect(url_for('login'))
 
@@ -2162,12 +2162,12 @@ def receipt_all_vendors():
         # -------------------------
         # LOAD FOOD SACK
         # -------------------------
-            cursor.execute("""
+        cursor.execute("""
             SELECT
                 fs.vendor_id,
                 fs.sack_qty,
                 r.name,
-                COALESCE(fs.sack_rate,0) AS rate,
+                COALESCE(r.rate,0) AS rate,
                 COALESCE(fs.total_cost,0) AS total
             FROM food_sack fs
             JOIN food_sack_rates r
@@ -2175,7 +2175,7 @@ def receipt_all_vendors():
             WHERE fs.user_id=%s
             AND fs.date BETWEEN %s AND %s
             ORDER BY fs.vendor_id
-            """,(user_id,from_date,to_date))
+        """,(user_id,from_date,to_date))
 
         food_rows = cursor.fetchall()
 
@@ -2209,7 +2209,6 @@ def receipt_all_vendors():
 
             vid = int(vendor['vendor_id'])
 
-            # ⭐ vendor special rate (only once)
             cow_rate = get_vendor_rate(cursor, vid, "cow", from_date)
             buffalo_rate = get_vendor_rate(cursor, vid, "buffalo", from_date)
 
@@ -2319,6 +2318,8 @@ def receipt_all_vendors():
         'receipt_all_vendors.html',
         receipts=None
     )
+
+
 # ------------------------------
 # Edit food sack & delete
 # ------------------------------
@@ -2770,70 +2771,29 @@ def disable_cache(response):
     return response
 
 
-import subprocess
-
-@app.route("/restore_backup/<filename>")
-def restore_backup(filename):
-
-    if "id" not in session:
-        return {"error": "Unauthorized"}, 401
-
-    filepath = os.path.join("backups", filename)
-
-    if not os.path.exists(filepath):
-        return {"error": "Backup file not found"}, 404
-
-    command = [
-        "mysql",
-        "-h", os.getenv("MYSQL_HOST"),
-        "-P", str(os.getenv("MYSQL_PORT")),
-        "-u", os.getenv("MYSQL_USER"),
-        f"-p{os.getenv('MYSQL_PASSWORD')}",
-        os.getenv("MYSQL_DB")
-    ]
-
-    try:
-        with open(filepath, "rb") as sql_file:
-            subprocess.run(
-                command,
-                stdin=sql_file,
-                check=True
-            )
-
-        return {"status": "restored"}
-
-    except subprocess.CalledProcessError as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }, 500
-
 @app.route("/backup_my_data")
 def backup_my_data():
 
-    user_id = session["id"]
+    if "id" not in session:
+        return {"error": "Unauthorized"}, 401
 
-    file = create_user_backup(user_id)
+    filename = create_backup()
 
     return jsonify({
         "status": "success",
-        "file": file
+        "file": filename
     })
 
-@app.route("/restore_my_data/<filename>")
-def restore_my_data(filename):
+
+@app.route("/restore_backup/<filename>", methods=["POST"])
+def restore_backup_route(filename):
 
     if "id" not in session:
         return {"error": "Unauthorized"}, 401
 
-    filepath = os.path.join("backups", filename)
-
-    if not os.path.exists(filepath):
-        return {"error": "Backup file not found"}, 404
-
     try:
 
-        restore_user_backup(filepath, session["id"])
+        restore_backup(filename)
 
         return {
             "status": "success",
@@ -2846,96 +2806,32 @@ def restore_my_data(filename):
             "status": "error",
             "message": str(e)
         }, 500
-        
-        
+
 
 @app.route("/admin_full_backup")
 def admin_full_backup():
 
-    file = create_full_backup()
+    filename = create_full_backup()
 
     return jsonify({
         "status": "success",
-        "file": file
+        "file": filename
     })
-    
+
+
 @app.route("/backup_history")
 def backup_history():
 
-    os.makedirs("backups", exist_ok=True)
-    files = os.listdir("backups")
+    files = list_backups()
 
     return jsonify({
         "files": files
     })
 
+
 @app.route("/backup_page")
 def backup_page():
     return render_template("backup.html")
-
-
-
-# ------------------------------
-# Healthcheck (simple)
-# ------------------------------
-@app.route('/healthcheck')
-def healthcheck():
-    return "OK"
-
-def cleanup_old_backups():
-
-    backup_dir = "backups"
-
-    if not os.path.exists(backup_dir):
-        return
-
-    files = sorted(
-        os.listdir(backup_dir),
-        key=lambda x: os.path.getmtime(os.path.join(backup_dir, x))
-    )
-
-    # keep last 30 backups
-    while len(files) > 30:
-
-        oldest = files[0]
-        filepath = os.path.join(backup_dir, oldest)
-
-        try:
-            os.remove(filepath)
-            print("Deleted old backup:", oldest)
-        except Exception as e:
-            print("Error deleting backup:", e)
-
-        files.pop(0)
-
-def create_local_backup():
-
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-    filename = f"backup_{timestamp}.sql"
-
-    filepath = os.path.join("backups", filename)
-
-    command = [
-        "mysqldump",
-        "--single-transaction",
-        "--quick",
-        "--lock-tables=false",
-        "-h", DB_HOST,
-        "-P", str(DB_PORT),
-        "-u", DB_USER,
-        f"-p{DB_PASS}",
-        DB_NAME
-    ]
-    with open(filepath, "w") as f:
-        subprocess.run(command, stdout=f)
-
-    print("Backup created:", filename)
-
-    # cleanup old backups
-    cleanup_old_backups()
-
-    return filename
 
 
 
@@ -2960,18 +2856,23 @@ import atexit
 scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
 scheduler.add_job(
-    func=automatic_backup,
+    func=create_backup,
     trigger=CronTrigger(hour=1, minute=30),
     id="daily_backup",
     replace_existing=True
 )
 
-# start scheduler safely (avoid duplicate start)
 if not scheduler.running:
     scheduler.start()
 
-# stop scheduler when app stops
 atexit.register(lambda: scheduler.shutdown())
+# ------------------------------
+# Healthcheck (simple)
+# ------------------------------
+@app.route('/healthcheck')
+def healthcheck():
+    return "OK"
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
