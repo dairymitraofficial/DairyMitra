@@ -649,4 +649,15 @@ ADD COLUMN is_active TINYINT(1) DEFAULT 1;
 CREATE INDEX idx_sack_rate_user
 ON food_sack_rates(user_id,is_active);
 
+CREATE INDEX idx_food_user_vendor_date
+ON food_sack(user_id,vendor_id,date);
 
+ALTER TABLE milk_collection
+ADD COLUMN staff_id INT;
+
+
+ALTER TABLE milk_collection
+ADD CONSTRAINT fk_staff_milk
+FOREIGN KEY (staff_id)
+REFERENCES staff(id)
+ON DELETE SET NULL;

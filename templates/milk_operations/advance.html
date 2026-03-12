@@ -47,47 +47,100 @@
 </form>
 
 <script>
+
 function filterVendors() {
+
     const input = document.getElementById("vendorSearch").value.toLowerCase();
     const rows = document.querySelectorAll("#vendorTable tbody tr");
+
     rows.forEach(row => {
+
         const id = row.cells[0].textContent.toLowerCase();
         const name = row.cells[1].textContent.toLowerCase();
-        row.style.display = id.includes(input) || name.includes(input) ? "" : "none";
+
+        row.style.display =
+            id.includes(input) || name.includes(input) ? "" : "none";
+
     });
+
 }
 
-document.getElementById("advance-form").addEventListener("submit", function(e) {
+
+document.getElementById("advance-form").addEventListener("submit", function(e){
+
     e.preventDefault();
+
+    // show loader (base.html function)
+    if(typeof showLoader === "function"){
+        showLoader();
+    }
 
     const form = e.target;
     const formData = new FormData(form);
-    const payload = {};
-    formData.forEach((value, key) => { payload[key] = value; });
 
-    fetch(form.action, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify(payload)
+    const payload = {};
+
+    formData.forEach((value,key)=>{
+        payload[key] = value;
+    });
+
+    fetch(form.action,{
+        method:"POST",
+        headers:{
+            "Content-Type":"application/json"
+        },
+        body:JSON.stringify(payload)
     })
-    .then(async res => {
-        let data;
-        try { data = await res.json(); }
-        catch { location.reload(); return; }
+
+    .then(res => res.json())
+
+    .then(data => {
+
+        // hide loader
+        if(typeof hideLoader === "function"){
+            hideLoader();
+        }
 
         const alertBox = document.getElementById("ajax-alert");
-        alertBox.innerHTML = "";
-        if (res.ok) {
-            alertBox.innerHTML = `<div class="badge badge-ok">${data.message || "ॲडव्हान्स सेव्ह झाले ✅"}</div>`;
-            form.querySelectorAll('input[type="number"]').forEach(inp => inp.value = "");
-        } else {
-            alertBox.innerHTML = `<div class="badge badge-danger">${data.message || "ॲडव्हान्स सेव्ह करताना त्रुटी ⚠️"}</div>`;
+
+        if(data.success){
+
+            alertBox.innerHTML =
+            `<div class="badge badge-ok">${data.message}</div>`;
+
+            // clear inputs
+            form.querySelectorAll('input[type="number"]').forEach(inp=>{
+                inp.value="";
+            });
+
+        }else{
+
+            alertBox.innerHTML =
+            `<div class="badge badge-danger">
+            ॲडव्हान्स सेव्ह करताना त्रुटी ⚠️
+            </div>`;
+
         }
+
     })
+
     .catch(err => {
-        document.getElementById("ajax-alert").innerHTML = `<div class="badge badge-danger">Network error. Try again.</div>`;
-        console.error("AJAX error:", err);
+
+        console.error(err);
+
+        // hide loader
+        if(typeof hideLoader === "function"){
+            hideLoader();
+        }
+
+        document.getElementById("ajax-alert").innerHTML =
+        `<div class="badge badge-danger">
+        Server error. Please try again.
+        </div>`;
+
     });
+
 });
+
 </script>
 {% endblock %}
