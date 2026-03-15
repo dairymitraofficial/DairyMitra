@@ -2,6 +2,17 @@
 
 {% block title %}दूध संकलन - Dairy Mitr{% endblock %}
 
+<div id="offlineBanner" style="
+display:none;
+background:#dc2626;
+color:white;
+padding:8px;
+border-radius:6px;
+margin-bottom:10px;
+font-weight:600;">
+🔴 Offline Mode – डेटा लोकल सेव्ह होईल
+</div>
+
 {% block content %}
 <h2 class="page-title flex items-center gap-2">
   <div class="icon-milk" data-lucide="milk"></div>
@@ -40,7 +51,11 @@
          placeholder="ग्राहक आयडी किंवा नाव शोधा"
          onkeyup="filterVendors()">
 </div>
-
+<div id="offlineCounter" style="
+font-weight:600;
+color:#dc2626;
+margin-bottom:10px;">
+</div>
 <!-- Milk Entry Table -->
 <div class="table-wrap">
 <form method="POST">
@@ -141,103 +156,213 @@
 {% block scripts %}
 <script>
 
-/* ================================
-   🟢 OFFLINE QUEUE SYSTEM
-================================ */
+/* =====================================
+   📦 INDEXEDDB OFFLINE DATABASE
+===================================== */
 
-function saveOfflineEntry(entry){
+let db;
 
-    let queue = JSON.parse(localStorage.getItem("milkQueue") || "[]");
+function initDB(){
 
-    queue.push(entry);
+    const request = indexedDB.open("DairyMitrOfflineDB", 1);
 
-    localStorage.setItem("milkQueue", JSON.stringify(queue));
+    request.onupgradeneeded = function(e){
 
-    console.log("Offline saved:", entry);
+        db = e.target.result;
+
+        if(!db.objectStoreNames.contains("milk_entries")){
+
+            db.createObjectStore("milk_entries",{
+                keyPath:"id",
+                autoIncrement:true
+            });
+
+        }
+
+    };
+
+    request.onsuccess = function(e){
+        db = e.target.result;
+        console.log("IndexedDB Ready");
+    };
+
+    request.onerror = function(){
+        console.log("IndexedDB Error");
+    };
 
 }
 
+initDB();
 
-async function syncOfflineEntries(){
 
-    let queue = JSON.parse(localStorage.getItem("milkQueue") || "[]");
+/* =====================================
+   💾 SAVE OFFLINE ENTRY
+===================================== */
+function saveOfflineEntry(entry){
 
-    if(queue.length === 0) return;
+    if(!db){
+        console.log("DB not ready");
+        return;
+    }
 
-    console.log("Syncing offline entries:", queue);
+    const tx = db.transaction("milk_entries","readwrite");
+    const store = tx.objectStore("milk_entries");
 
-    for(let entry of queue){
+    const getAll = store.getAll();
 
-        try{
+    getAll.onsuccess = function(){
 
-            await fetch("/submit_milk_ajax",{
-                method:"POST",
-                headers:{"Content-Type":"application/json"},
-                body:JSON.stringify(entry)
-            });
+        const entries = getAll.result;
 
-        }catch(e){
+        const duplicate = entries.find(e =>
+            e.vendor_id == entry.vendor_id &&
+            e.date == entry.date &&
+            e.slot == entry.slot &&
+            e.milk_type == entry.milk_type
+        );
 
-            console.log("Sync failed", e);
+        if(duplicate){
+
+            alert("या vendor साठी या वेळेचं दूध आधीच ऑफलाइन सेव्ह आहे.");
+
             return;
 
         }
 
-    }
+        store.add({
+            vendor_id: entry.vendor_id,
+            milk_type: entry.milk_type,
+            quantity: entry.quantity,
+            date: entry.date,
+            slot: entry.slot,
+            synced:false
+        });
 
-    localStorage.removeItem("milkQueue");
+        console.log("Offline saved:", entry);
 
-    console.log("Offline data synced");
+/* Register background sync */
+
+if("serviceWorker" in navigator && "SyncManager" in window){
+
+    navigator.serviceWorker.ready.then(function(reg){
+
+        reg.sync.register("sync-milk-data");
+
+    });
+
+}
+
+updateOfflineCounter();
+
+
+
+    };
+
+}
+
+/* =====================================
+   🔄 SYNC OFFLINE ENTRIES
+===================================== */
+
+async function syncOfflineEntries(){
+
+    if(!db) return;
+
+    const tx = db.transaction("milk_entries","readonly");
+    const store = tx.objectStore("milk_entries");
+    const request = store.getAll();
+
+    request.onsuccess = async function(){
+
+        const entries = request.result;
+
+        if(entries.length === 0) return;
+
+        console.log("Syncing entries:", entries);
+
+        for(let entry of entries){
+
+            try{
+
+                await fetch("/submit_milk_ajax",{
+                    method:"POST",
+                    headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify(entry)
+                });
+
+                const deleteTx = db.transaction("milk_entries","readwrite");
+                const deleteStore = deleteTx.objectStore("milk_entries");
+
+                deleteStore.delete(entry.id);
+
+            }catch(e){
+
+                console.log("Sync failed:", e);
+                return;
+
+            }
+
+        }
+
+        console.log("Offline entries synced");
+        updateOfflineCounter();
+    };
 
 }
 
 
-/* ================================
+/* =====================================
    🌐 INTERNET RESTORE SYNC
-================================ */
+===================================== */
 
 window.addEventListener("online", function(){
 
-    console.log("Internet back → syncing");
+    console.log("Internet restored → syncing");
 
     syncOfflineEntries();
 
 });
 
 
-/* ================================
+/* =====================================
    📂 PAGE LOAD SYNC
-================================ */
+===================================== */
 
 window.addEventListener("DOMContentLoaded", function(){
 
     if(navigator.onLine){
         syncOfflineEntries();
     }
-
+    updateOfflineCounter();
 });
 
 
-/* ================================
-   ✅ LIVE FILTER
-================================ */
+/* =====================================
+   🔍 LIVE SEARCH FILTER
+===================================== */
+
 function filterVendors() {
+
     const input = document.getElementById("vendorSearch").value.toLowerCase();
     const rows = document.querySelectorAll("#vendorTable tbody tr");
 
     rows.forEach(row => {
+
         const id = row.cells[0].textContent.toLowerCase();
         const name = row.cells[1].textContent.toLowerCase();
 
         row.style.display =
             id.includes(input) || name.includes(input) ? "" : "none";
+
     });
+
 }
 
 
-/* ================================
-   ✅ SINGLE SUBMIT
-================================ */
+/* =====================================
+   🥛 SINGLE MILK ENTRY SUBMIT
+===================================== */
+
 function submitVendorMilk(index, forceSave=false) {
 
     const vendor_id = document.getElementById('vendor_id_' + index).value;
@@ -251,7 +376,7 @@ function submitVendorMilk(index, forceSave=false) {
         return;
     }
 
-    /* 🟢 OFFLINE SAVE */
+    /* OFFLINE MODE */
 
     if(!navigator.onLine){
 
@@ -260,8 +385,7 @@ function submitVendorMilk(index, forceSave=false) {
             milk_type,
             quantity,
             date,
-            slot,
-            force_save: forceSave
+            slot
         });
 
         alert("इंटरनेट नाही. डेटा ऑफलाइन सेव्ह झाला.");
@@ -304,17 +428,14 @@ function submitVendorMilk(index, forceSave=false) {
     })
     .catch(error => {
 
-        console.error("Error:", error);
-
-        /* 🟢 NETWORK ERROR → OFFLINE SAVE */
+        console.error("Network error → saving offline");
 
         saveOfflineEntry({
             vendor_id,
             milk_type,
             quantity,
             date,
-            slot,
-            force_save: forceSave
+            slot
         });
 
         alert("नेटवर्क समस्या. डेटा ऑफलाइन सेव्ह झाला.");
@@ -324,9 +445,10 @@ function submitVendorMilk(index, forceSave=false) {
 }
 
 
-/* ================================
-   ✅ BULK SUBMIT
-================================ */
+/* =====================================
+   📦 BULK SUBMIT
+===================================== */
+
 function finalSubmit() {
 
     const rows = document.querySelectorAll("#vendorTable tbody tr");
@@ -344,14 +466,13 @@ function finalSubmit() {
         if (quantity) {
             data.push({ vendor_id, milk_type, quantity, date, slot });
         }
+
     });
 
     if (data.length === 0) {
         alert("कृपया किमान एक प्रमाण भरा.");
         return;
     }
-
-    /* 🟢 OFFLINE BULK SAVE */
 
     if(!navigator.onLine){
 
@@ -360,6 +481,7 @@ function finalSubmit() {
         alert("इंटरनेट नाही. सर्व डेटा ऑफलाइन सेव्ह झाला.");
 
         return;
+
     }
 
     fetch("/submit_bulk_milk_ajax", {
@@ -374,19 +496,21 @@ function finalSubmit() {
     })
     .catch(error => {
 
-        console.error("Bulk submit failed:", error);
+        console.error("Bulk submit failed → saving offline");
 
         data.forEach(e => saveOfflineEntry(e));
 
         alert("नेटवर्क समस्या. सर्व डेटा ऑफलाइन सेव्ह झाला.");
 
     });
+
 }
 
 
-/* ================================
-   ✅ AUTO SLOT + RESET LOGIC
-================================ */
+/* =====================================
+   ⏰ AUTO SLOT + RESET LOGIC
+===================================== */
+
 window.addEventListener("DOMContentLoaded", function() {
 
     const slotSelect = document.querySelector('select[name="slot"]');
@@ -397,7 +521,7 @@ window.addEventListener("DOMContentLoaded", function() {
 
         slotSelect.value = hour < 15 ? "morning" : "evening";
 
-    }   
+    }
 
     const total = {{ vendors|length }};
 
@@ -415,9 +539,60 @@ window.addEventListener("DOMContentLoaded", function() {
             });
 
         }
+
     }
 
 });
 
+function updateOfflineCounter(){
+
+    if(!db) return;
+
+    const tx = db.transaction("milk_entries","readonly");
+    const store = tx.objectStore("milk_entries");
+
+    const request = store.getAll();
+
+    request.onsuccess = function(){
+
+        const pending = request.result.length;
+
+        const box = document.getElementById("offlineCounter");
+
+        if(pending > 0){
+
+            box.innerText = "Offline entries pending : " + pending;
+
+        }else{
+
+            box.innerText = "";
+
+        }
+
+    };
+
+}
+
+function updateOfflineBanner(){
+
+    const banner = document.getElementById("offlineBanner");
+
+    if(!navigator.onLine){
+
+        banner.style.display="block";
+
+    }else{
+
+        banner.style.display="none";
+
+    }
+
+}
+
+window.addEventListener("online",updateOfflineBanner);
+window.addEventListener("offline",updateOfflineBanner);
+
+window.addEventListener("DOMContentLoaded",updateOfflineBanner);
 </script>
+
 {% endblock %}

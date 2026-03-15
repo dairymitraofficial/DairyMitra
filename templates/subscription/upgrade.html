@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Upgrade Plan</title>
+
+<style>
+
+body{
+font-family: Arial, sans-serif;
+background:#f5f7fb;
+margin:0;
+padding:0;
+}
+
+.container{
+max-width:1100px;
+margin:auto;
+padding:30px 20px;
+text-align:center;
+}
+
+h1{
+margin-bottom:10px;
+}
+
+.subtitle{
+color:#666;
+margin-bottom:40px;
+}
+
+/* DESKTOP */
+.plans{
+display:flex;
+justify-content:center;
+gap:30px;
+flex-wrap:wrap;
+}
+
+.card{
+background:white;
+border-radius:12px;
+box-shadow:0 10px 30px rgba(0,0,0,0.1);
+padding:30px;
+width:320px;
+transition:0.3s;
+}
+
+.card:hover{
+transform:translateY(-8px);
+}
+
+.price{
+font-size:32px;
+font-weight:bold;
+margin:20px 0;
+}
+
+.features{
+list-style:none;
+padding:0;
+margin:0;
+}
+
+.features li{
+padding:10px 0;
+border-bottom:1px solid #eee;
+font-size:15px;
+}
+
+.btn{
+display:block;
+width:100%;
+margin-top:20px;
+padding:14px;
+background:#4CAF50;
+color:white;
+border:none;
+border-radius:6px;
+text-decoration:none;
+font-weight:bold;
+font-size:16px;
+cursor:pointer;
+}
+
+.btn:hover{
+background:#43a047;
+}
+
+.pro{
+border:2px solid #ff9800;
+}
+
+.badge{
+background:#ff9800;
+color:white;
+padding:4px 10px;
+border-radius:5px;
+font-size:12px;
+}
+
+/* MOBILE RESPONSIVE */
+
+@media (max-width:768px){
+
+.container{
+padding:20px;
+}
+
+.plans{
+flex-direction:column;
+align-items:center;
+gap:20px;
+}
+
+.card{
+width:100%;
+max-width:400px;
+padding:25px;
+}
+
+.price{
+font-size:28px;
+}
+
+.features li{
+font-size:14px;
+}
+
+.btn{
+font-size:15px;
+padding:13px;
+}
+
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>Upgrade Your Plan</h1>
+
+<p class="subtitle">
+Your trial has expired. Choose a plan to continue using DairyMitr.
+</p>
+
+<div class="plans">
+
+<!-- PLUS PLAN -->
+
+<div class="card">
+
+<h2>Plus</h2>
+
+<div class="price">9 / month</div>
+
+<ul class="features">
+
+<li>✔ Milk Collection</li>
+<li>✔ Vendor Management</li>
+<li>✔ Staff System</li>
+<li>✔ Advance Tracking</li>
+<li>✔ Food Sack Management</li>
+<li>❌ Vendor Receipts</li>
+<li>❌ SMS Alerts</li>
+
+</ul>
+
+<button class="btn" onclick="buyPlan('plus',9)">
+Upgrade to Plus
+</button>
+
+</div>
+
+<!-- PRO PLAN -->
+
+<div class="card pro">
+
+<h2>Pro <span class="badge">Best</span></h2>
+
+<div class="price">₹19 / month</div>
+
+<ul class="features">
+
+<li>✔ Everything in Plus</li>
+<li>✔ Vendor Receipts</li>
+<li>✔ SMS Alerts</li>
+<li>✔ AI Milk Prediction</li>
+<li>✔ Vendor Performance Analytics</li>
+<li>✔ Vehicle Milk Reports</li>
+<li>✔ Automatic Backups</li>
+
+</ul>
+
+<button class="btn" onclick="buyPlan('pro',19)">
+Upgrade to Pro
+</button>
+
+</div>
+
+</div>
+</div>
+
+<script>
+
+function buyPlan(plan, amount){
+
+fetch("/create_order",{
+
+method:"POST",
+
+headers:{
+"Content-Type":"application/json"
+},
+
+body:JSON.stringify({
+plan:plan,
+amount:amount
+})
+
+})
+
+.then(res=>res.json())
+
+.then(data=>{
+
+var options = {
+
+key:data.key,
+
+amount:data.amount,
+
+currency:"INR",
+
+name:"DairyMitr",
+
+description:plan+" Plan",
+
+order_id:data.order_id,
+
+handler:function(response){
+
+fetch("/payment_success",{
+
+method:"POST",
+
+headers:{
+"Content-Type":"application/json"
+},
+
+body:JSON.stringify({
+payment_id:response.razorpay_payment_id,
+order_id:response.razorpay_order_id,
+plan:plan
+})
+
+})
+
+.then(res=>res.json())
+
+.then(data=>{
+
+window.location="/";
+
+});
+
+}
+
+};
+
+var rzp = new Razorpay(options);
+
+rzp.open();
+
+});
+
+}
+
+</script>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+</body>
+</html>

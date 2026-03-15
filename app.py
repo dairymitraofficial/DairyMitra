@@ -32,13 +32,16 @@ from functools import lru_cache
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from backup_system import create_backup, create_full_backup, restore_backup, list_backups
-
+import razorpay
 load_dotenv()
 
 # ------------------------------
 # Basic config & logging
 # ------------------------------
 app = Flask(__name__)
+
+app.permanent_session_lifetime = timedelta(days=7)
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 
 app.secret_key = os.getenv("SECRET_KEY", "d7e5f19e4c2a4a7b93c6f405f3d9a8c3b1a0c9e7e8d5f4c2a7b6f5e3a9d0c8f2") 
 
@@ -95,6 +98,13 @@ class SafeCursor:
     def __getattr__(self, name):
         return getattr(self.cursor, name)
 
+
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_SECRET = os.getenv("RAZORPAY_SECRET")
+
+razorpay_client = razorpay.Client(
+    auth=(RAZORPAY_KEY_ID, RAZORPAY_SECRET)
+)
 # Twilio
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
@@ -126,6 +136,67 @@ def audit_log(user_id, action, details=""):
         print("Audit logging failed:", e)
 
 
+def plus_required(f):
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+
+        if "id" not in session:
+            return redirect(url_for("login"))
+
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+        SELECT plan
+        FROM users
+        WHERE id=%s
+        """,(session["id"],))
+
+        user = cursor.fetchone()
+
+        if not user:
+            return redirect(url_for("login"))
+
+        if user["plan"] not in ["plus","pro"]:
+
+            flash("This feature requires PLUS plan.","warning")
+
+            return redirect(url_for("upgrade"))
+
+        return f(*args, **kwargs)
+
+    return wrapper
+
+def pro_required(f):
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+
+        if "id" not in session:
+            return redirect(url_for("login"))
+
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+        SELECT plan
+        FROM users
+        WHERE id=%s
+        """,(session["id"],))
+
+        user = cursor.fetchone()
+
+        if not user:
+            return redirect(url_for("login"))
+
+        if user["plan"] != "pro":
+
+            flash("This feature requires PRO plan.","warning")
+
+            return redirect(url_for("upgrade"))
+
+        return f(*args, **kwargs)
+
+    return wrapper
 
 # ------------------------------
 # Helper utilities
@@ -225,6 +296,8 @@ def login():
 
                 session.clear()
 
+                session.permanent = True
+
                 session['id'] = int(account['id'])
                 session['loggedin'] = True
                 session['role'] = "owner"
@@ -248,6 +321,8 @@ def login():
         if staff and check_password_hash(staff['password'], password):
 
             session.clear()
+
+            session.permanent = True
 
             session['loggedin'] = True
             session['role'] = "staff"
@@ -350,10 +425,21 @@ def verify_account():
         otp_entered = request.form.get('otp')
         if otp_entered == temp.get('otp'):
             cursor = SafeCursor(mysql.connection.cursor())
+            trial_start = date.today()
+            trial_end = trial_start + timedelta(days=10)
+
             cursor.execute("""
-                INSERT INTO users (email, password, phone, dairy_name, is_verified)
-                VALUES (%s, %s, %s, %s, TRUE)
-            """, (temp['email'], temp['password'], temp['phone'], temp['dairy_name']))
+            INSERT INTO users 
+            (email, password, phone, dairy_name, is_verified, plan, trial_start, trial_end)
+            VALUES (%s, %s, %s, %s, TRUE, 'trial', %s, %s)
+            """, (
+                temp['email'],
+                temp['password'],
+                temp['phone'],
+                temp['dairy_name'],
+                trial_start,
+                trial_end
+            ))
             mysql.connection.commit()
             session.pop('temp_signup', None)
             flash('Account verified. Please login.', 'success')
@@ -446,30 +532,116 @@ def require_login():
     """
     Basic protection: allow certain endpoints without login.
     Also normalize session['id'] to int if possible.
+    Also checks subscription / trial expiry.
     """
 
     allowed = {
-        'login', 'signup', 'verify_account', 'forgot_password',
-        'verify_reset_otp', 'reset_password', 'static', 'healthcheck', 'favicon'
+        'login',
+        'signup',
+        'verify_account',
+        'forgot_password',
+        'verify_reset_otp',
+        'reset_password',
+        'static',
+        'healthcheck',
+        'favicon',
+        'upgrade'
     }
 
+    # -----------------------------
+    # LOGIN PROTECTION
+    # -----------------------------
     if request.endpoint and request.endpoint not in allowed and 'loggedin' not in session:
         return redirect(url_for('login'))
 
-    if 'id' in session:
-        uid = session['id']
+    # -----------------------------
+    # SESSION ID NORMALIZATION
+    # -----------------------------
+    if 'id' not in session:
+        return
 
-        if isinstance(uid, bytes):
-            uid = uid.decode()
+    uid = session['id']
 
-        session['id'] = int(uid)
+    if isinstance(uid, bytes):
+        uid = uid.decode()
+
+    session['id'] = int(uid)
+
+    # -----------------------------
+    # SUBSCRIPTION CHECK
+    # -----------------------------
+    try:
+
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+        SELECT plan, trial_end, subscription_end
+        FROM users
+        WHERE id=%s
+        """, (session['id'],))
+
+        user = cursor.fetchone()
+
+        if not user:
+            return
+
+        today = date.today()
+
+        # -----------------------------
+        # TRIAL PLAN CHECK
+        # -----------------------------
+        if user['plan'] == 'trial':
+
+            trial_end = user.get('trial_end')
+
+            if trial_end and today > trial_end:
+
+                if request.endpoint != "upgrade":
+
+                    flash(
+                        "Your free trial has expired. Please upgrade your plan.",
+                        "warning"
+                    )
+
+                    return redirect(url_for("upgrade"))
+
+        # -----------------------------
+        # PLUS / PRO CHECK
+        # -----------------------------
+        if user['plan'] in ['plus', 'pro']:
+
+            sub_end = user.get('subscription_end')
+
+            if sub_end and today > sub_end:
+
+                if request.endpoint != "upgrade":
+
+                    flash(
+                        "Your subscription expired. Please renew.",
+                        "warning"
+                    )
+
+                    return redirect(url_for("upgrade"))
+
+    except Exception:
+        logging.exception("Subscription middleware error")
 # ------------------------------
 # Dashboard
 # ------------------------------
+
+@app.route("/upgrade")
+def upgrade():
+
+    if "id" not in session:
+        return redirect(url_for("login"))
+
+    return render_template("subscription/upgrade.html")
+
 from datetime import date
 
 @app.route("/")
 def dashboard():
+
     if "id" not in session:
         flash("Unauthorized request, please log in.", "danger")
         return redirect(url_for("login"))
@@ -478,7 +650,38 @@ def dashboard():
 
     cursor = SafeCursor(mysql.connection.cursor())
 
-    # ✅ आजचं दूध (सकाळ/संध्याकाळ) – DATE() वापरलं
+    # ------------------------------
+    # SUBSCRIPTION / TRIAL STATUS
+    # ------------------------------
+    cursor.execute("""
+    SELECT plan, trial_end
+    FROM users
+    WHERE id=%s
+    """,(user_id,))
+
+    user = cursor.fetchone()
+
+    trial_days_left = None
+    trial_expired = False
+
+    if user and user["plan"] == "trial":
+
+        trial_end = user.get("trial_end")
+
+        if trial_end:
+
+            today = date.today()
+
+            days_left = (trial_end - today).days
+
+            if days_left >= 0:
+                trial_days_left = days_left
+            else:
+                trial_expired = True
+
+    # ------------------------------
+    # TODAY MILK COLLECTION
+    # ------------------------------
     cursor.execute(
         """
         SELECT slot, SUM(quantity) AS total_quantity
@@ -488,32 +691,44 @@ def dashboard():
         """,
         (user_id,)
     )
+
     milk_data = cursor.fetchall()
 
     morning_milk = 0
     evening_milk = 0
+
     for row in milk_data:
-        slot = row['slot'].lower()   # ✅ case-insensitive compare
+
+        slot = row['slot'].lower()
+
         if slot == 'morning':
             morning_milk = row['total_quantity']
+
         elif slot == 'evening':
             evening_milk = row['total_quantity']
 
-    # ✅ एकूण ग्राहक
+    # ------------------------------
+    # TOTAL VENDORS
+    # ------------------------------
     cursor.execute(
         "SELECT COUNT(*) AS total_vendors FROM vendors WHERE user_id = %s",
         (user_id,)
     )
+
     vendor_count_result = cursor.fetchone()
+
     total_vendors = vendor_count_result['total_vendors'] if vendor_count_result else 0
 
     cursor.close()
 
     return render_template(
         "dashboard.html",
-    
+        morning_milk=morning_milk,
+        evening_milk=evening_milk,
+        total_vendors=total_vendors,
+        trial_days_left=trial_days_left,
+        trial_expired=trial_expired
     )
-
 
 
 
@@ -656,6 +871,7 @@ def delete_vendor(vendor_id):
 
 
 @app.route('/add_staff', methods=['GET','POST'])
+@plus_required
 def add_staff():
 
     if "id" not in session:
@@ -689,6 +905,7 @@ def add_staff():
     return render_template("staff/add_staff.html")
 
 @app.route('/staff_list')
+@plus_required
 def staff_list():
 
     if "id" not in session:
@@ -708,6 +925,7 @@ def staff_list():
     return render_template("staff/staff_list.html",staff=staff)
 
 @app.route('/edit_staff/<int:staff_id>', methods=['GET','POST'])
+@plus_required
 def edit_staff(staff_id):
 
     cursor = SafeCursor(mysql.connection.cursor())
@@ -742,6 +960,7 @@ def edit_staff(staff_id):
 
 
 @app.route('/reset_staff_password/<int:staff_id>', methods=['GET','POST'])
+@plus_required
 def reset_staff_password(staff_id):
 
     if "id" not in session:
@@ -775,6 +994,7 @@ def reset_staff_password(staff_id):
     return render_template("staff/reset_staff_password.html")
 
 @app.route('/disable_staff/<int:staff_id>')
+@plus_required
 def disable_staff(staff_id):
 
     cursor = SafeCursor(mysql.connection.cursor())
@@ -792,6 +1012,7 @@ def disable_staff(staff_id):
     return redirect(url_for("staff_list"))
 
 @app.route('/enable_staff/<int:staff_id>')
+@plus_required
 def enable_staff(staff_id):
 
     cursor = SafeCursor(mysql.connection.cursor())
@@ -809,6 +1030,7 @@ def enable_staff(staff_id):
     return redirect(url_for("staff_list"))
 
 @app.route("/vehicle_milk_report")
+@plus_required
 def vehicle_milk_report():
 
     if "id" not in session:
@@ -2117,6 +2339,7 @@ def payment():
     
     
 @app.route('/receipt_all_vendors', methods=['GET', 'POST'])
+@pro_required
 def receipt_all_vendors():
 
 
@@ -2458,6 +2681,7 @@ def milk_summary():
 # Vendor Range Summary Page
 # ------------------------------
 @app.route("/vendor_range_summary", methods=["GET", "POST"])
+@plus_required
 def vendor_range_summary():
 
     if "id" not in session:
@@ -2592,6 +2816,7 @@ def about():
     return render_template("head/about.html")
 
 @app.route("/milk_prediction")
+@pro_required
 def milk_prediction_page():
 
     if 'id' not in session:
@@ -2610,6 +2835,7 @@ def milk_prediction_page():
 
 
 @app.route("/api/predict_milk/<int:vendor_id>")
+@pro_required
 def api_predict_milk(vendor_id):
 
     if 'id' not in session:
@@ -2651,6 +2877,7 @@ def api_predict_milk(vendor_id):
     
     
 @app.route("/vendor_performance")
+@pro_required
 def vendor_performance():
 
     if 'id' not in session:
@@ -2866,6 +3093,87 @@ if not scheduler.running:
     scheduler.start()
 
 atexit.register(lambda: scheduler.shutdown())
+
+# ------------------------------
+# Subscription
+# ------------------------------
+
+@app.route("/create_order", methods=["POST"])
+def create_order():
+
+    if "id" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+
+    plan = data.get("plan")
+    amount = int(data.get("amount"))
+
+    order = razorpay_client.order.create({
+
+        "amount": amount * 100,
+        "currency": "INR",
+        "payment_capture": 1
+
+    })
+
+    return jsonify({
+
+        "order_id": order["id"],
+        "amount": order["amount"],
+        "key": RAZORPAY_KEY_ID
+
+    })
+
+@app.route("/payment_success", methods=["POST"])
+@pro_required
+def payment_success():
+
+    if "id" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+
+    payment_id = data.get("payment_id")
+    order_id = data.get("order_id")
+    plan = data.get("plan")
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    try:
+
+        payment = razorpay_client.payment.fetch(payment_id)
+
+        if payment["status"] != "captured":
+
+            return jsonify({"status":"failed"}),400
+
+        start_date = date.today()
+        end_date = start_date + timedelta(days=30)
+
+        cursor.execute("""
+        UPDATE users
+        SET plan=%s,
+            subscription_start=%s,
+            subscription_end=%s,
+            payment_id=%s
+        WHERE id=%s
+        """,(plan,start_date,end_date,payment_id,session["id"]))
+
+        mysql.connection.commit()
+
+        return jsonify({"status":"success"})
+
+    except Exception as e:
+
+        logging.exception("Payment verification failed")
+
+        return jsonify({"status":"error"})
+
+
+
+
+
 # ------------------------------
 # Healthcheck (simple)
 # ------------------------------

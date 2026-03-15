@@ -7,134 +7,188 @@
   {{ session.get("dairy_name","My Dairy") }}
 </h2>
 
+<!-- TRIAL BANNER -->
+
+{% if trial_days_left is not none %}
+<div class="trial-banner">
+  ⏳ तुमचा Free Trial अजून {{ trial_days_left }} दिवस शिल्लक आहे.
+  <a href="{{ url_for('upgrade') }}" class="upgrade-btn">Upgrade करा</a>
+</div>
+{% endif %}
+
+{% if trial_expired %}
+<div class="trial-expired">
+  ⚠ तुमचा Free Trial संपला आहे.
+  <a href="{{ url_for('upgrade') }}" class="upgrade-btn">Upgrade करून वापर सुरू ठेवा</a>
+</div>
+{% endif %}
+
 <!-- TODAY ACTIONS -->
 
 <section class="section">
-  <h4>आजचं काम</h4>
-  <div class="grid-cards">
+<h4>आजचं काम</h4>
 
+<div class="grid-cards">
 
-<!-- दूध जमा (owner + staff) -->
+<!-- MILK COLLECTION -->
 <a class="card card-action" href="{{ url_for('milk_collection') }}">
-  <span class="iconify icon-blue"
-        data-icon="material-symbols:local-drink-outline"></span>
-  <span>दूध जमा</span>
+<span class="iconify icon-blue"
+data-icon="material-symbols:local-drink-outline"></span>
+<span>दूध जमा</span>
 </a>
 
 {% if session.get('role') != 'staff' %}
-<!-- आजचा हिशोब (owner only) -->
+
+<!-- CALCULATION -->
 <a class="card card-action" href="{{ url_for('calculation') }}">
-  <span class="iconify icon-teal"
-        data-icon="material-symbols:calculate-outline"></span>
-  <span>आजचा हिशोब</span>
+<span class="iconify icon-teal"
+data-icon="material-symbols:calculate-outline"></span>
+<span>आजचा हिशोब</span>
 </a>
 
-<!-- पावती -->
+<!-- RECEIPT (PRO) -->
+
+{% if plan == 'pro' %}
+
 <a class="card card-action" href="{{ url_for('receipt_all_vendors') }}">
-  <span class="iconify icon-purple"
-        data-icon="material-symbols:receipt-long-outline"></span>
-  <span>पावती</span>
-
+<span class="iconify icon-purple"
+data-icon="material-symbols:receipt-long-outline"></span>
+<span>पावती</span>
 </a>
 
-  <a href="{{ url_for('vehicle_milk_report') }}">
-<a class="card card-action" href="{{ url_for('vehicle_milk_report') }}">
+{% else %}
 
-  <span class="iconify icon-purple"
-        data-icon="mdi:truck-outline"></span>
-
-  <span>गाडीप्रमाणे दूध</span>
-
+<a class="card card-action locked" href="{{ url_for('upgrade') }}">
+<span class="iconify icon-purple"
+data-icon="material-symbols:receipt-long-outline"></span>
+<span>पावती 🔒 PRO</span>
 </a>
+
 {% endif %}
 
+<!-- VEHICLE REPORT (PLUS) -->
 
-  </div>
+{% if plan in ['plus','pro'] %}
+
+<a class="card card-action" href="{{ url_for('vehicle_milk_report') }}">
+<span class="iconify icon-purple"
+data-icon="mdi:truck-outline"></span>
+<span>गाडीप्रमाणे दूध</span>
+</a>
+
+{% else %}
+
+<a class="card card-action locked" href="{{ url_for('upgrade') }}">
+<span class="iconify icon-purple"
+data-icon="mdi:truck-outline"></span>
+<span>गाडीप्रमाणे दूध 🔒 PLUS</span>
+</a>
+
+{% endif %}
+
+{% endif %}
+
+</div>
 </section>
 
 {% if session.get('role') != 'staff' %}
 
-<!-- DAILY (owner only) -->
+<!-- DAILY -->
 
 <section class="section mt-4">
-  <h4>दैनंदिन काम</h4>
-  <div class="grid-cards">
 
+<h4>दैनंदिन काम</h4>
+
+<div class="grid-cards">
 
 <a class="card card-action" href="{{ url_for('add_vendor') }}">
-  <span class="iconify icon-sky"
-        data-icon="material-symbols:person-add-outline"></span>
-  <span>नवीन ग्राहक</span>
+<span class="iconify icon-sky"
+data-icon="material-symbols:person-add-outline"></span>
+<span>नवीन ग्राहक</span>
 </a>
 
 <a class="card card-action" href="{{ url_for('edit_entry') }}">
-  <span class="iconify icon-amber"
-        data-icon="material-symbols:edit-document-outline"></span>
-  <span>नोंदी बदला</span>
+<span class="iconify icon-amber"
+data-icon="material-symbols:edit-document-outline"></span>
+<span>नोंदी बदला</span>
 </a>
 
 <a class="card card-action" href="{{ url_for('food_sack') }}">
-  <span class="iconify icon-green"
-        data-icon="material-symbols:agriculture-outline"></span>
-  <span>पेंड</span>
+<span class="iconify icon-green"
+data-icon="material-symbols:agriculture-outline"></span>
+<span>पेंड</span>
 </a>
 
 <a class="card card-action" href="{{ url_for('advance') }}">
-  <span class="iconify icon-emerald"
-        data-icon="material-symbols:payments-outline"></span>
-  <span>ॲडव्हान्स</span>
+<span class="iconify icon-emerald"
+data-icon="material-symbols:payments-outline"></span>
+<span>ॲडव्हान्स</span>
 </a>
 
-
-  </div>
+</div>
 </section>
+
 {% endif %}
 
 <!-- REPORTS -->
 
 <section class="section mt-4">
-  <h4>Reports</h4>
-  <div class="grid-cards">
 
+<h4>Reports</h4>
 
-<!-- Vendor Range Report (owner + staff) -->
+<div class="grid-cards">
+
+<!-- VENDOR RANGE (PLUS) -->
+
+{% if plan in ['plus','pro'] %}
+
 <a class="card card-action" href="{{ url_for('vendor_range_summary') }}">
-  <span class="iconify icon-pink"
-        data-icon="material-symbols:grouped-bar-chart-outline"></span>
-  <span>Vendor Range Report</span>
+<span class="iconify icon-pink"
+data-icon="material-symbols:grouped-bar-chart-outline"></span>
+<span>Vendor Range Report</span>
 </a>
 
-<!-- दूध सारांश (owner + staff) -->
+{% else %}
+
+<a class="card card-action locked" href="{{ url_for('upgrade') }}">
+<span class="iconify icon-pink"
+data-icon="material-symbols:grouped-bar-chart-outline"></span>
+<span>Vendor Range Report 🔒 PLUS</span>
+</a>
+
+{% endif %}
+
+<!-- MILK SUMMARY -->
+
 <a class="card card-action" href="{{ url_for('milk_summary') }}">
-  <span class="iconify icon-indigo"
-        data-icon="material-symbols:bar-chart-outline"></span>
-  <span>दूध सारांश</span>
+<span class="iconify icon-indigo"
+data-icon="material-symbols:bar-chart-outline"></span>
+<span>दूध सारांश</span>
 </a>
 
 {% if session.get('role') != 'staff' %}
-<!-- दूध दर -->
+
 <a class="card card-action" href="{{ url_for('milk_rate') }}">
-  <span class="iconify icon-violet"
-        data-icon="material-symbols:sell-outline"></span>
-  <span>दूध दर</span>
+<span class="iconify icon-violet"
+data-icon="material-symbols:sell-outline"></span>
+<span>दूध दर</span>
 </a>
 
 <a class="card card-action" href="{{ url_for('vendor_rate') }}">
-  <span class="iconify icon-violet"
-        data-icon="material-symbols:sell-outline"></span>
-  <span>Customer नुसार दूध दर</span>
+<span class="iconify icon-violet"
+data-icon="material-symbols:sell-outline"></span>
+<span>Customer नुसार दूध दर</span>
 </a>
 
-<!-- खाद्य दर -->
 <a class="card card-action" href="{{ url_for('food_sack_rate') }}">
-  <span class="iconify icon-green"
-        data-icon="material-symbols:eco-outline"></span>
-  <span>खाद्य दर</span>
+<span class="iconify icon-green"
+data-icon="material-symbols:eco-outline"></span>
+<span>खाद्य दर</span>
 </a>
+
 {% endif %}
 
-
-  </div>
+</div>
 </section>
 
 {% endblock %}
