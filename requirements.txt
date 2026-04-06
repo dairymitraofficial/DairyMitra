@@ -3,12 +3,12 @@ Werkzeug==3.1.3
 
 Flask-MySQLdb==2.0.0
 mysqlclient==2.2.7
-mysql-connector-python
+mysql-connector-python==8.3.0
 
 python-dotenv
 gunicorn
 
-pandas==2.1.4
+pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.5.1
 

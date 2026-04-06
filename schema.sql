@@ -257,3 +257,7 @@ ON vendors(user_id);
 
 CREATE INDEX idx_rates_user
 ON milk_rates(user_id,date_from);
+
+
+
+
