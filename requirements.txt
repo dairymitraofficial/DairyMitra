@@ -5,8 +5,8 @@ Flask-MySQLdb==2.0.0
 mysqlclient==2.2.7
 mysql-connector-python==8.3.0
 
-python-dotenv
-gunicorn
+python-dotenv==1.0.1
+gunicorn==22.0.0
 
 pandas==2.2.2
 numpy==1.26.4
@@ -16,7 +16,7 @@ APScheduler==3.10.4
 twilio==9.5.2
 sib-api-v3-sdk==7.6.0
 
-google-api-python-client
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
+google-api-python-client==2.125.0
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
