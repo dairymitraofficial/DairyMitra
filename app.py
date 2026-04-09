@@ -219,7 +219,7 @@ def login():
 
         account = cursor.fetchone()
 
-        if account and check_password_hash(account['password'], password):
+        if account and account.get("is_verified") and check_password_hash(account['password'], password):
 
             if account.get('is_verified'):
 
@@ -511,7 +511,9 @@ def dashboard():
 
     return render_template(
         "dashboard.html",
-    
+        morning_milk=morning_milk,
+    evening_milk=evening_milk,
+    total_vendors=total_vendors
     )
 
 
@@ -1296,7 +1298,24 @@ def submit_bulk_milk_ajax():
     return jsonify(result), status
 
 
+@app.route('/get_milk_data')
+def get_milk_data():
 
+    if "id" not in session:
+        return jsonify([])
+
+    date_val = request.args.get("date")
+    slot_val = request.args.get("slot")
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    cursor.execute("""
+        SELECT vendor_id, milk_type, quantity
+        FROM milk_collection
+        WHERE user_id=%s AND date=%s AND slot=%s
+    """, (session['id'], date_val, slot_val))
+
+    return jsonify(cursor.fetchall())
 
 # ------------------------------
 # Advance (safe add/update)
@@ -1666,12 +1685,14 @@ def edit_entry():
             data.append(rec)
 
             d+=timedelta(days=1)
-
+    today = date.today().strftime('%Y-%m-%d')
     return render_template(
         "milk_operations/edit_entry.html",
         vendors=vendors,
         data=data,
-        selected_vendor_type=selected_vendor_type
+        selected_vendor_type=selected_vendor_type,
+        today=today
+
     )
 
 
@@ -2453,7 +2474,59 @@ def milk_summary():
         totals=totals
     )
 
+from datetime import date
 
+@app.route('/reports/milk-summary', methods=['GET', 'POST'])
+def milk_summary_report():
+
+    # 👉 default आजची date
+    selected_date = request.args.get('date') or date.today().isoformat()
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    cursor.execute("""
+        SELECT 
+            v.vendor_id AS id,
+            v.name,
+            COALESCE(SUM(CASE 
+                WHEN m.milk_type='cow' AND m.slot='morning' AND DATE(m.date)=%s 
+                THEN m.quantity END),0) AS cow_morning,
+
+            COALESCE(SUM(CASE 
+                WHEN m.milk_type='cow' AND m.slot='evening' AND DATE(m.date)=%s 
+                THEN m.quantity END),0) AS cow_evening,
+
+            COALESCE(SUM(CASE 
+                WHEN m.milk_type='buffalo' AND m.slot='morning' AND DATE(m.date)=%s 
+                THEN m.quantity END),0) AS buffalo_morning,
+
+            COALESCE(SUM(CASE 
+                WHEN m.milk_type='buffalo' AND m.slot='evening' AND DATE(m.date)=%s 
+                THEN m.quantity END),0) AS buffalo_evening
+
+        FROM vendors v
+        LEFT JOIN milk_collection m
+            ON v.vendor_id = m.vendor_id
+            AND v.user_id = m.user_id
+        WHERE v.user_id = %s
+        GROUP BY v.vendor_id, v.name
+        ORDER BY v.vendor_id ASC
+    """, (
+        selected_date,
+        selected_date,
+        selected_date,
+        selected_date,
+        session['id']
+    ))
+
+    data = cursor.fetchall()
+    cursor.close()
+
+    return render_template(
+        'reports/milk_summary_report.html',
+        data=data,
+        selected_date=selected_date
+    )
 # ------------------------------
 # Vendor Range Summary Page
 # ------------------------------

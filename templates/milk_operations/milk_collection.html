@@ -14,7 +14,29 @@ font-weight:600;">
 </div>
 
 {% block content %}
+<div id="loader" style="
+display:none;
+position:fixed;
+top:0;
+left:0;
+width:100%;
+height:100%;
+background:rgba(0,0,0,0.5);
+z-index:9999;
+justify-content:center;
+align-items:center;
+">
+  <div style="
+  background:white;
+  padding:20px 30px;
+  border-radius:10px;
+  font-weight:600;
+  ">
+    ⏳ सेव्ह होत आहे...
+  </div>
+</div>
 <h2 class="page-title flex items-center gap-2">
+  
   <div class="icon-milk" data-lucide="milk"></div>
   दूध संकलन 
 </h2>
@@ -156,6 +178,13 @@ margin-bottom:10px;">
 {% block scripts %}
 <script>
 
+function showLoader(){
+    document.getElementById("loader").style.display = "flex";
+}
+
+function hideLoader(){
+    document.getElementById("loader").style.display = "none";
+}
 /* =====================================
    📦 INDEXEDDB OFFLINE DATABASE
 ===================================== */
@@ -330,10 +359,19 @@ window.addEventListener("online", function(){
 
 window.addEventListener("DOMContentLoaded", function(){
 
+    // offline sync
     if(navigator.onLine){
         syncOfflineEntries();
     }
+
+    // counter
     updateOfflineCounter();
+
+    // 🔥 NEW: auto load saved data
+    setTimeout(() => {
+    loadSavedMilkData();
+}, 300);
+
 });
 
 
@@ -392,7 +430,7 @@ function submitVendorMilk(index, forceSave=false) {
 
         return;
     }
-
+    showLoader();
     fetch("/submit_milk_ajax", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -407,7 +445,7 @@ function submitVendorMilk(index, forceSave=false) {
     })
     .then(response => response.json())
     .then(data => {
-
+        hideLoader();
         const warnBox = document.getElementById("warning_" + index);
 
         if (data.warning && !forceSave) {
@@ -425,9 +463,20 @@ function submitVendorMilk(index, forceSave=false) {
 
         alert(data.message);
 
+        // ✅ auto update UI
+const qtyEl = document.getElementById('quantity_' + index);
+if(qtyEl){
+    qtyEl.style.background = "#d4edda";
+}
+
+// 🔥 reload fresh data
+setTimeout(() => {
+    loadSavedMilkData();
+}, 200);
+
     })
     .catch(error => {
-
+     hideLoader();   
         console.error("Network error → saving offline");
 
         saveOfflineEntry({
@@ -483,19 +532,21 @@ function finalSubmit() {
         return;
 
     }
-
+    showLoader();
     fetch("/submit_bulk_milk_ajax", {
+        
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ vendors: data })
     })
     .then(response => response.json())
     .then(result => {
+        hideLoader();
         alert(result.message);
         window.location.reload();
     })
     .catch(error => {
-
+        hideLoader();
         console.error("Bulk submit failed → saving offline");
 
         data.forEach(e => saveOfflineEntry(e));
@@ -593,6 +644,84 @@ window.addEventListener("online",updateOfflineBanner);
 window.addEventListener("offline",updateOfflineBanner);
 
 window.addEventListener("DOMContentLoaded",updateOfflineBanner);
+
+
+
+
 </script>
 
+
+<script>
+function loadSavedMilkData(){
+
+    const date = document.querySelector('input[name="date"]').value;
+    const slot = document.querySelector('select[name="slot"]').value;
+
+    fetch(`/get_milk_data?date=${date}&slot=${slot}`)
+    .then(res => res.json())
+    .then(data => {
+
+        const rows = document.querySelectorAll("#vendorTable tbody tr");
+
+        // 🔥 RESET FIRST
+        rows.forEach((row, i) => {
+            const qtyEl = document.getElementById("quantity_" + i);
+            if(qtyEl){
+                qtyEl.value = "";
+            }
+        });
+
+        // 🔥 APPLY SAVED DATA (ONLY SHOW)
+        data.forEach(item => {
+
+            rows.forEach((row, i) => {
+
+                const v_id = document.getElementById("vendor_id_" + i).value;
+
+                if(v_id == item.vendor_id){
+
+                    const typeEl = document.getElementById("milk_type_" + i);
+                    const qtyEl = document.getElementById("quantity_" + i);
+
+                    if(typeEl && typeEl.tagName === "SELECT"){
+                        typeEl.value = item.milk_type;
+                    }
+
+                    if(qtyEl){
+                        qtyEl.value = item.quantity;
+                    }
+
+                }
+
+            });
+
+        });
+
+    })
+    .catch(err => console.log("Load error:", err));
+}
+
+
+// 🔥 AUTO LOAD
+window.addEventListener("DOMContentLoaded", function(){
+    setTimeout(loadSavedMilkData, 200);
+});
+
+
+// 🔥 AUTO REFRESH (DATE / SLOT CHANGE)
+document.addEventListener("DOMContentLoaded", function(){
+
+    const dateInput = document.querySelector('input[name="date"]');
+    const slotSelect = document.querySelector('select[name="slot"]');
+
+    if(dateInput){
+        dateInput.addEventListener("change", loadSavedMilkData);
+    }
+
+    if(slotSelect){
+        slotSelect.addEventListener("change", loadSavedMilkData);
+    }
+
+});
+</script>
 {% endblock %}
