@@ -1384,61 +1384,147 @@ ORDER BY vendor_id ASC
 # ------------------------------
 # Food Sack (safe grouping & update)
 # ------------------------------
-@app.route('/food_sack', methods=['GET', 'POST'])
+@app.route('/food_sack')
 def food_sack():
+
+    vendors = get_vendors_cached(session['id'])
+
+    selected_date = request.args.get('date') or date.today().isoformat()
+
     cursor = SafeCursor(mysql.connection.cursor())
     cursor.execute("""
-SELECT * FROM vendors
-WHERE user_id = %s
-ORDER BY vendor_id ASC
-""", (session['id'],))
-    vendors = cursor.fetchall()
-    cursor.execute("""
-SELECT *
-FROM food_sack_rates
-WHERE user_id = %s
-AND is_active = 1
-ORDER BY name
-""", (session['id'],))
+        SELECT * FROM food_sack_rates
+        WHERE user_id=%s AND is_active=1
+        ORDER BY name
+    """, (session['id'],))
     sack_rates = cursor.fetchall()
-    if request.method == 'POST':
-        entry_date = request.form.get('date') or date.today().isoformat()
-        for v in vendors:
-            vid = v['vendor_id']
-            qty = request.form.get(f'sack_qty_{vid}')
-            sack_id = request.form.get(f'sack_type_{vid}')
-            if not qty or not sack_id:
-                continue
-            try:
-                qty_i = int(qty)
-                sack_id_i = int(sack_id)
-            except:
-                continue
-            cursor.execute("SELECT rate FROM food_sack_rates WHERE id=%s AND user_id=%s", (sack_id_i, session['id']))
-            res = cursor.fetchone()
-            if not res:
-                continue
-            rate = float(res['rate'])
-            total = qty_i * rate
-            # Check existing entry for same vendor/date/rate
+
+    return render_template(
+        'milk_operations/food_sack.html',
+        vendors=vendors,
+        sack_rates=sack_rates,
+        selected_date=selected_date,
+        today_date=selected_date
+    )
+
+@app.route('/submit_food_sack_ajax', methods=['POST'])
+def submit_food_sack_ajax():
+
+    data = request.get_json()
+
+    vendor_id = data.get('vendor_id')
+    qty = data.get('quantity')
+    sack_id = data.get('sack_id')
+    date_val = data.get('date')
+
+    if not vendor_id or not qty or not sack_id:
+        return jsonify({"message": "Missing data"}), 400
+
+    try:
+        qty = int(qty)
+        sack_id = int(sack_id)
+    except:
+        return jsonify({"message": "Invalid data"}), 400
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    # rate fetch
+    cursor.execute("""
+        SELECT rate FROM food_sack_rates
+        WHERE id=%s AND user_id=%s
+    """, (sack_id, session['id']))
+    res = cursor.fetchone()
+
+    if not res:
+        return jsonify({"message": "Invalid sack"}), 400
+
+    rate = float(res['rate'])
+    total = qty * rate
+
+    # 🔥 UPDATE (duplicate nahi)
+    cursor.execute("""
+        SELECT id FROM food_sack
+        WHERE vendor_id=%s AND user_id=%s AND date=%s AND sack_rate_id=%s
+    """, (vendor_id, session['id'], date_val, sack_id))
+
+    existing = cursor.fetchone()
+
+    if existing:
+        cursor.execute("""
+            UPDATE food_sack
+            SET sack_qty=%s, total_cost=%s
+            WHERE id=%s
+        """, (qty, total, existing['id']))
+    else:
+        cursor.execute("""
+            INSERT INTO food_sack
+            (vendor_id, user_id, date, sack_qty, sack_rate_id, sack_rate, total_cost)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+        """, (vendor_id, session['id'], date_val, qty, sack_id, rate, total))
+
+    mysql.connection.commit()
+
+    return jsonify({"message": f"Saved for vendor {vendor_id}"})
+
+
+@app.route('/submit_bulk_food_sack_ajax', methods=['POST'])
+def submit_bulk_food_sack_ajax():
+
+    data = request.get_json()
+    entries = data.get("entries", [])
+
+    if not entries:
+        return jsonify({"message": "No data"}), 400
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    saved = 0
+
+    for item in entries:
+
+        vendor_id = item['vendor_id']
+        qty = int(item['quantity'])
+        sack_id = int(item['sack_id'])
+        date_val = item['date']
+
+        cursor.execute("""
+            SELECT rate FROM food_sack_rates
+            WHERE id=%s AND user_id=%s
+        """, (sack_id, session['id']))
+        res = cursor.fetchone()
+
+        if not res:
+            continue
+
+        rate = float(res['rate'])
+        total = qty * rate
+
+        cursor.execute("""
+            SELECT id FROM food_sack
+            WHERE vendor_id=%s AND user_id=%s AND date=%s AND sack_rate_id=%s
+        """, (vendor_id, session['id'], date_val, sack_id))
+
+        existing = cursor.fetchone()
+
+        if existing:
             cursor.execute("""
-                SELECT id, sack_qty, total_cost FROM food_sack
-                WHERE vendor_id=%s AND user_id=%s AND date=%s AND sack_rate_id=%s
-            """, (vid, session['id'], entry_date, sack_id_i))
-            existing = cursor.fetchone()
-            if existing:
-                new_qty = int(existing['sack_qty']) + qty_i
-                new_total = float(existing['total_cost']) + total
-                cursor.execute("UPDATE food_sack SET sack_qty=%s, total_cost=%s, sack_rate_id=%s WHERE id=%s",
-                               (new_qty, new_total, sack_id_i, existing['id']))
-            else:
-                cursor.execute("INSERT INTO food_sack (vendor_id, user_id, date, sack_qty, sack_rate_id, sack_rate, total_cost) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                               (vid, session['id'], entry_date, qty_i, sack_id_i, rate, total))
-        mysql.connection.commit()
-        audit_log(session['id'], 'food_sack_update', f"date={entry_date}")
-        flash('Food sack data saved.', 'success')
-        return redirect(url_for('food_sack'))
-    return render_template('milk_operations/food_sack.html', vendors=vendors, sack_rates=sack_rates, today_date=date.today().isoformat())
+                UPDATE food_sack
+                SET sack_qty=%s, total_cost=%s
+                WHERE id=%s
+            """, (qty, total, existing['id']))
+        else:
+            cursor.execute("""
+                INSERT INTO food_sack
+                (vendor_id, user_id, date, sack_qty, sack_rate_id, sack_rate, total_cost)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+            """, (vendor_id, session['id'], date_val, qty, sack_id, rate, total))
+
+        saved += 1
+
+    mysql.connection.commit()
+
+    return jsonify({"message": f"{saved} entries saved"})
+
 
 
 @app.route('/add_food_sack', methods=['POST'])
@@ -2329,16 +2415,20 @@ def receipt_all_vendors():
         cursor.close()
 
         return render_template(
-            'receipt_all_vendors.html',
-            receipts=all_receipts
-        )
-
+    'receipt_all_vendors.html',
+    receipts=all_receipts,
+    from_date=from_date,
+    to_date=to_date
+)
     cursor.close()
 
     return render_template(
-        'receipt_all_vendors.html',
-        receipts=None
-    )
+    'receipt_all_vendors.html',
+    receipts=None,
+    from_date=None,
+    to_date=None
+)
+
 
 
 # ------------------------------
@@ -2352,7 +2442,7 @@ def edit_food_sack():
 
     cursor = SafeCursor(mysql.connection.cursor())
     cursor.execute(
-        "SELECT vendor_id, name FROM vendors WHERE user_id = %s ORDER BY name ASC",
+        "SELECT vendor_id, name FROM vendors WHERE user_id = %s ORDER BY vendor_id  ASC",
         (session['id'],)
     )
     vendors = cursor.fetchall()
