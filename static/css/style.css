@@ -1088,245 +1088,11 @@ input:disabled:focus {
 
 
 
-
-
-
 /* =================================================
-   RECEIPT PAGE – MODERN PROFESSIONAL DESIGN
+   GLOBAL COMPONENTS (style.css)
 ================================================= */
 
-/* ---------- Page Title ---------- */
-.receipt-page-title{
-    text-align:center;
-    font-size:28px;
-    font-weight:700;
-    margin-bottom:25px;
-    color:#1e293b;
-}
-
-/* ---------- Date Form ---------- */
-.receipt-form{
-    display:flex;
-    flex-wrap:wrap;
-    gap:15px;
-    align-items:center;
-    justify-content:center;
-    margin-bottom:25px;
-}
-
-.receipt-form input[type="date"]{
-    padding:8px 12px;
-    border-radius:6px;
-    border:1px solid #cbd5e1;
-    font-size:14px;
-}
-
-.receipt-form button{
-    padding:9px 18px;
-    border-radius:6px;
-    border:none;
-    background:#2563eb;
-    color:white;
-    font-weight:600;
-    cursor:pointer;
-    transition:0.3s;
-}
-
-.receipt-form button:hover{
-    background:#1d4ed8;
-}
-
-/* ---------- Vendor Selection Panel ---------- */
-.vendor-selection{
-    background:white;
-    border-radius:12px;
-    padding:20px;
-    margin:25px auto;
-    max-width:1000px;
-    box-shadow:0 5px 15px rgba(0,0,0,0.08);
-}
-
-.vendor-selection h3{
-    margin-bottom:15px;
-    font-size:18px;
-    font-weight:600;
-}
-
-.vendor-controls{
-    display:flex;
-    flex-wrap:wrap;
-    gap:10px;
-    margin-bottom:15px;
-}
-
-.vendor-controls input{
-    padding:7px 10px;
-    border-radius:6px;
-    border:1px solid #cbd5e1;
-    width:100px;
-}
-
-.vendor-controls button{
-    padding:7px 14px;
-    border-radius:6px;
-    border:none;
-    font-size:13px;
-    cursor:pointer;
-    font-weight:600;
-    transition:0.3s;
-}
-
-#selectAllBtn{
-    background:#16a34a;
-    color:white;
-}
-
-#selectAllBtn:hover{
-    background:#15803d;
-}
-
-#deselectAllBtn{
-    background:#dc2626;
-    color:white;
-}
-
-#deselectAllBtn:hover{
-    background:#b91c1c;
-}
-
-#selectRangeBtn{
-    background:#2563eb;
-    color:white;
-}
-
-#selectRangeBtn:hover{
-    background:#1d4ed8;
-}
-
-/* ---------- Vendor List ---------- */
-.vendor-list{
-    max-height:200px;
-    overflow-y:auto;
-    padding:10px;
-    border:1px solid #e2e8f0;
-    border-radius:8px;
-    background:#f8fafc;
-}
-
-.vendor-item{
-    display:block;
-    margin-bottom:6px;
-    font-size:14px;
-    cursor:pointer;
-}
-
-.vendor-item input{
-    margin-right:6px;
-}
-
-/* ---------- Print Button ---------- */
-.print-btn{
-    padding:10px 22px;
-    border:none;
-    border-radius:8px;
-    background:#0f172a;
-    color:white;
-    font-weight:600;
-    cursor:pointer;
-    margin:20px 0;
-    transition:0.3s;
-}
-
-.print-btn:hover{
-    background:#1e293b;
-}
-
-/* ---------- Receipt Wrapper ---------- */
-.receipt-wrapper{
-    max-width:1000px;
-    margin:0 auto 40px auto;
-}
-
-/* ---------- Receipt Box ---------- */
-.receipt-box{
-    background:white;
-    border-radius:12px;
-    padding:25px;
-    margin-bottom:35px;
-    box-shadow:0 8px 20px rgba(0,0,0,0.08);
-    page-break-inside:avoid;
-}
-
-.receipt-box h3{
-    text-align:center;
-    font-size:20px;
-    margin-bottom:15px;
-}
-
-/* ---------- Tables ---------- */
-table{
-    width:100%;
-    border-collapse:collapse;
-    margin-top:15px;
-}
-
-th, td{
-    border:1px solid #e2e8f0;
-    padding:6px 8px;
-    text-align:center;
-    font-size:13px;
-}
-
-thead{
-    background:#f1f5f9;
-}
-
-tfoot{
-    background:#e2e8f0;
-    font-weight:600;
-}
-
-/* ---------- Summary Table ---------- */
-.summary-table td{
-    text-align:left;
-}
-
-.summary-table td:last-child{
-    text-align:right;
-    font-weight:600;
-}
-
-/* ---------- Empty Message ---------- */
-.receipt-empty{
-    text-align:center;
-    margin-top:40px;
-    font-size:16px;
-    color:#64748b;
-}
-
-/* =================================================
-   PRINT STYLING
-================================================= */
-@media print{
-
-    .no-print{
-        display:none !important;
-    }
-
-    body{
-        background:white;
-    }
-
-    .receipt-box{
-        box-shadow:none;
-        border:1px solid #000;
-    }
-
-    table{
-        font-size:12px;
-    }
-}
-
+/* ---------- Progress Bar ---------- */
 .progress-bar{
   width:100%;
   height:14px;
@@ -1343,107 +1109,80 @@ tfoot{
   transition:width .3s ease;
 }
 
-
+/* ---------- Layout Utilities ---------- */
 .max-w-md{
-max-width:500px;
-margin:auto;
-}
-
-.action-buttons{
-display:flex;
-gap:8px;
-align-items:center;
-}
-
-.action-buttons .btn{
-width:34px;
-height:34px;
-display:flex;
-align-items:center;
-justify-content:center;
-border-radius:8px;
-padding:0;
-}
-
-.sidebar-link.active{
-background:#e8f5e9;
-color:var(--primary);
-font-weight:600;
-}
-
-#global-loader{
-position:fixed;
-top:0;
-left:0;
-width:100%;
-height:100%;
-background:rgba(0,0,0,0.35);
-display:none;
-align-items:center;
-justify-content:center;
-z-index:10000;
-}
-
-.loader-box{
-background:#fff;
-padding:25px 35px;
-border-radius:12px;
-font-weight:600;
-display:flex;
-flex-direction:column;
-align-items:center;
-gap:12px;
-}
-
-.spinner{
-width:35px;
-height:35px;
-border:4px solid #e5e7eb;
-border-top:4px solid #16a34a;
-border-radius:50%;
-animation:spin 0.8s linear infinite;
-}
-
-@keyframes spin{
-0%{transform:rotate(0deg)}
-100%{transform:rotate(360deg)}
+  max-width:500px;
+  margin:auto;
 }
 
 .container {
-    padding: 20px;
+  padding: 20px;
 }
 
 .page-title {
-    text-align: center;
-    margin-bottom: 20px;
-    color: #2c3e50;
+  text-align: center;
+  margin-bottom: 20px;
+  color: #2c3e50;
 }
 
-.table-container {
-    overflow-x: auto;
+/* ---------- Action Buttons & Sidebar ---------- */
+.action-buttons{
+  display:flex;
+  gap:8px;
+  align-items:center;
 }
 
-.milk-table {
-    width: 100%;
-    border-collapse: collapse;
-    background: #ffffff;
-    border-radius: 10px;
-    overflow: hidden;
+.action-buttons .btn{
+  width:34px;
+  height:34px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:8px;
+  padding:0;
 }
 
-.milk-table th {
-    background: linear-gradient(45deg, #4CAF50, #2ecc71);
-    color: white;
-    padding: 12px;
-    text-align: center;
+.sidebar-link.active{
+  background:#e8f5e9;
+  color:var(--primary);
+  font-weight:600;
 }
 
-.milk-table td {
-    padding: 10px;
-    text-align: center;
-    border-bottom: 1px solid #ddd;
+/* ---------- Global Loader & Spinner ---------- */
+#global-loader{
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.35);
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:10000;
 }
 
-.milk-table tr:hover {
-    background-color: #f5f5f5;
+.loader-box{
+  background:#fff;
+  padding:25px 35px;
+  border-radius:12px;
+  font-weight:600;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:12px;
+}
+
+.spinner{
+  width:35px;
+  height:35px;
+  border:4px solid #e5e7eb;
+  border-top:4px solid #16a34a;
+  border-radius:50%;
+  animation:spin 0.8s linear infinite;
+}
+
+@keyframes spin{
+  0%{transform:rotate(0deg)}
+  100%{transform:rotate(360deg)}
 }
