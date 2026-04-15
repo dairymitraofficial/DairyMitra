@@ -29,7 +29,7 @@ from ai.vendor_analysis import analyze_vendor
 
 from functools import lru_cache
 
-from apscheduler.schedulers.background import BackgroundScheduler
+
 
 from backup_system import create_backup, create_full_backup, restore_backup, list_backups
 
@@ -3012,23 +3012,8 @@ def date_indian(value):
 
     return value.strftime("%d/%m/%Y")
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import atexit
 
-scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
 
-scheduler.add_job(
-    func=create_backup,
-    trigger=CronTrigger(hour=1, minute=30),
-    id="daily_backup",
-    replace_existing=True
-)
-
-if not scheduler.running:
-    scheduler.start()
-
-atexit.register(lambda: scheduler.shutdown())
 # ------------------------------
 # Healthcheck (simple)
 # ------------------------------
@@ -3037,5 +3022,8 @@ def healthcheck():
     return "OK"
 
 
+import os
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
