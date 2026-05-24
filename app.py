@@ -444,25 +444,86 @@ def reset_password():
 @app.before_request
 def require_login():
     """
-    Basic protection: allow certain endpoints without login.
-    Also normalize session['id'] to int if possible.
+    Basic protection
+    + Auto logout disabled staff
     """
 
     allowed = {
-        'login', 'signup', 'verify_account', 'forgot_password',
-        'verify_reset_otp', 'reset_password', 'static', 'healthcheck', 'favicon'
+        'login',
+        'signup',
+        'verify_account',
+        'forgot_password',
+        'verify_reset_otp',
+        'reset_password',
+        'static',
+        'healthcheck',
+        'favicon'
     }
 
-    if request.endpoint and request.endpoint not in allowed and 'loggedin' not in session:
-        return redirect(url_for('login'))
+    # -----------------------------
+    # LOGIN CHECK
+    # -----------------------------
+    if request.endpoint and request.endpoint not in allowed:
+        if 'loggedin' not in session:
+            return redirect(url_for('login'))
 
+    # -----------------------------
+    # NORMALIZE SESSION ID
+    # -----------------------------
     if 'id' in session:
         uid = session['id']
 
         if isinstance(uid, bytes):
             uid = uid.decode()
 
-        session['id'] = int(uid)
+        try:
+            session['id'] = int(uid)
+        except Exception:
+            session.clear()
+            flash("Session expired. Please login again.", "danger")
+            return redirect(url_for('login'))
+
+    # -----------------------------
+    # AUTO LOGOUT DISABLED STAFF
+    # -----------------------------
+    if session.get("role") == "staff":
+
+        staff_id = session.get("staff_id")
+
+        # session broken
+        if not staff_id:
+            session.clear()
+            flash("Session invalid. Please login again.", "danger")
+            return redirect(url_for("login"))
+
+        try:
+            cursor = SafeCursor(mysql.connection.cursor())
+
+            cursor.execute("""
+                SELECT id, is_active
+                FROM staff
+                WHERE id=%s
+            """, (staff_id,))
+
+            staff = cursor.fetchone()
+            cursor.close()
+
+            # staff deleted
+            if not staff:
+                session.clear()
+                flash("Account not found.", "danger")
+                return redirect(url_for("login"))
+
+            # staff disabled by owner
+            if int(staff["is_active"]) == 0:
+                session.clear()
+                flash("Your account has been disabled by owner.", "danger")
+                return redirect(url_for("login"))
+
+        except Exception:
+            session.clear()
+            flash("Session check failed. Please login again.", "danger")
+            return redirect(url_for("login"))
 # ------------------------------
 # Dashboard
 # ------------------------------
@@ -777,37 +838,89 @@ def reset_staff_password(staff_id):
     return render_template("staff/reset_staff_password.html")
 
 @app.route('/disable_staff/<int:staff_id>')
+@app.route('/disable_staff/<int:staff_id>')
 def disable_staff(staff_id):
+
+    # login check
+    if "id" not in session:
+        flash("Please login first.", "danger")
+        return redirect(url_for("login"))
+
+    # only owner allowed
+    if session.get("role") != "owner":
+        flash("Unauthorized access.", "danger")
+        return redirect(url_for("dashboard"))
 
     cursor = SafeCursor(mysql.connection.cursor())
 
+    # verify staff belongs to this owner
     cursor.execute("""
-    UPDATE staff
-    SET is_active=0
-    WHERE id=%s AND owner_id=%s
-    """,(staff_id,session["id"]))
+        SELECT id
+        FROM staff
+        WHERE id=%s AND owner_id=%s
+    """, (staff_id, session["id"]))
+
+    staff = cursor.fetchone()
+
+    if not staff:
+        cursor.close()
+        flash("Staff not found.", "danger")
+        return redirect(url_for("staff_list"))
+
+    # disable
+    cursor.execute("""
+        UPDATE staff
+        SET is_active=0
+        WHERE id=%s AND owner_id=%s
+    """, (staff_id, session["id"]))
 
     mysql.connection.commit()
+    cursor.close()
 
-    flash("Staff disabled","warning")
-
+    flash("Staff disabled successfully.", "warning")
     return redirect(url_for("staff_list"))
 
 @app.route('/enable_staff/<int:staff_id>')
+@app.route('/enable_staff/<int:staff_id>')
 def enable_staff(staff_id):
+
+    # login check
+    if "id" not in session:
+        flash("Please login first.", "danger")
+        return redirect(url_for("login"))
+
+    # only owner allowed
+    if session.get("role") != "owner":
+        flash("Unauthorized access.", "danger")
+        return redirect(url_for("dashboard"))
 
     cursor = SafeCursor(mysql.connection.cursor())
 
+    # verify staff belongs to this owner
     cursor.execute("""
-    UPDATE staff
-    SET is_active=1
-    WHERE id=%s AND owner_id=%s
-    """,(staff_id,session["id"]))
+        SELECT id
+        FROM staff
+        WHERE id=%s AND owner_id=%s
+    """, (staff_id, session["id"]))
+
+    staff = cursor.fetchone()
+
+    if not staff:
+        cursor.close()
+        flash("Staff not found.", "danger")
+        return redirect(url_for("staff_list"))
+
+    # enable
+    cursor.execute("""
+        UPDATE staff
+        SET is_active=1
+        WHERE id=%s AND owner_id=%s
+    """, (staff_id, session["id"]))
 
     mysql.connection.commit()
+    cursor.close()
 
-    flash("Staff enabled","success")
-
+    flash("Staff enabled successfully.", "success")
     return redirect(url_for("staff_list"))
 
 @app.route("/vehicle_milk_report")
