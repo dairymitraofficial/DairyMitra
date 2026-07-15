@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import MySQLdb.cursors
 
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify,send_file
 from flask_mysqldb import MySQL
 
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -608,10 +608,13 @@ def add_vendor():
         address = request.form.get('address')
         milk_type = request.form.get('milk_type')
         phone = request.form.get('phone')
+        ifsc_code = request.form.get('ifsc_code')
+        account_no = request.form.get('account_no')
 
         # CHECK IF ID EXISTS
         cursor.execute("""
-            SELECT 1 FROM vendors
+            SELECT 1
+            FROM vendors
             WHERE vendor_id=%s AND user_id=%s
         """, (vendor_id, session['id']))
 
@@ -627,20 +630,41 @@ def add_vendor():
                 address=address,
                 milk_type=milk_type,
                 phone=phone,
+                ifsc_code=ifsc_code,
+                account_no=account_no,
                 vendor_id=vendor_id
             )
 
         # INSERT NEW VENDOR
         cursor.execute("""
             INSERT INTO vendors
-            (vendor_id,name,address,milk_type,phone,user_id)
-            VALUES(%s,%s,%s,%s,%s,%s)
-        """,(vendor_id,name,address,milk_type,phone,session['id']))
+            (
+                vendor_id,
+                name,
+                address,
+                milk_type,
+                phone,
+                ifsc_code,
+                account_no,
+                user_id
+            )
+            VALUES
+            (%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            vendor_id,
+            name,
+            address,
+            milk_type,
+            phone,
+            ifsc_code,
+            account_no,
+            session['id']
+        ))
 
         mysql.connection.commit()
-        get_vendors_cached.cache_clear() 
+        get_vendors_cached.cache_clear()
 
-        flash("✔ Vendor Added Successfully","success")
+        flash("✔ Vendor Added Successfully", "success")
 
         return redirect(url_for('add_vendor'))
 
@@ -670,28 +694,78 @@ def vendor_list():
 
 @app.route('/edit_vendor/<string:vendor_id>', methods=['GET', 'POST'])
 def edit_vendor(vendor_id):
+
     cursor = SafeCursor(mysql.connection.cursor())
-    cursor.execute("SELECT 1 FROM vendors WHERE vendor_id = %s AND user_id = %s", (vendor_id, session['id']))
+
+    # Check vendor belongs to logged-in user
+    cursor.execute("""
+        SELECT 1
+        FROM vendors
+        WHERE vendor_id=%s AND user_id=%s
+    """, (vendor_id, session['id']))
+
     if not cursor.fetchone():
         flash('Unauthorized or vendor not found.', 'danger')
         return redirect(url_for('vendor_list'))
+
     if request.method == 'POST':
+
         name = request.form.get('name')
         address = request.form.get('address')
         milk_type = request.form.get('milk_type')
         phone = request.form.get('phone')
+        ifsc_code = request.form.get('ifsc_code')
+        account_no = request.form.get('account_no')
+
         cursor.execute("""
-            UPDATE vendors SET name=%s, address=%s, milk_type=%s, phone=%s
-            WHERE vendor_id=%s AND user_id=%s
-        """, (name, address, milk_type, phone, vendor_id, session['id']))
+            UPDATE vendors
+            SET
+                name=%s,
+                address=%s,
+                milk_type=%s,
+                phone=%s,
+                ifsc_code=%s,
+                account_no=%s
+            WHERE
+                vendor_id=%s
+                AND user_id=%s
+        """, (
+            name,
+            address,
+            milk_type,
+            phone,
+            ifsc_code,
+            account_no,
+            vendor_id,
+            session['id']
+        ))
+
         mysql.connection.commit()
-        get_vendors_cached.cache_clear() 
-        audit_log(session['id'], 'edit_vendor', f"vendor_id={vendor_id}")
-        flash('Vendor updated.', 'success')
+        get_vendors_cached.cache_clear()
+
+        audit_log(
+            session['id'],
+            'edit_vendor',
+            f'vendor_id={vendor_id}'
+        )
+
+        flash('Vendor updated successfully.', 'success')
         return redirect(url_for('vendor_list'))
-    cursor.execute("SELECT * FROM vendors WHERE user_id = %s AND vendor_id=%s", (session['id'], vendor_id))
+
+    cursor.execute("""
+        SELECT *
+        FROM vendors
+        WHERE
+            user_id=%s
+            AND vendor_id=%s
+    """, (session['id'], vendor_id))
+
     vendor = cursor.fetchone()
-    return render_template('vendors/edit_vendor.html', vendor=vendor)
+
+    return render_template(
+        'vendors/edit_vendor.html',
+        vendor=vendor
+    )
 
 
 @app.route('/delete_vendor/<int:vendor_id>', methods=['POST'])
@@ -2835,6 +2909,221 @@ def inject_now():
 
 
 
+from io import BytesIO
+from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+
+
+@app.route('/generate_bank_report', methods=['GET', 'POST'])
+def generate_bank_report():
+
+    if 'id' not in session:
+        return redirect(url_for('login'))
+
+    if request.method == 'GET':
+        return render_template(
+            'reports/generate_bank_report.html',
+            from_date=None,
+            to_date=None
+        )
+
+    from_date = request.form.get("from_date")
+    to_date = request.form.get("to_date")
+
+    # CHANGED: return JSON + 400 instead of flash()+redirect(),
+    # so fetch() can tell an error apart from a real file download.
+    if not from_date or not to_date:
+        return jsonify({"error": "Please select both dates."}), 400
+
+    if from_date > to_date:
+        return jsonify({"error": "Invalid date range."}), 400
+
+    user_id = int(session["id"])
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    # -------------------------------------------------
+    # 1. Vendors
+    # -------------------------------------------------
+    cursor.execute("""
+        SELECT vendor_id,name,address,milk_type,
+               ifsc_code,account_no
+        FROM vendors
+        WHERE user_id=%s
+        ORDER BY vendor_id
+    """, (user_id,))
+    vendors = cursor.fetchall()
+
+    # -------------------------------------------------
+    # 2. Milk quantities - aggregated in SQL itself
+    # -------------------------------------------------
+    cursor.execute("""
+        SELECT vendor_id, milk_type, SUM(quantity) AS qty
+        FROM milk_collection
+        WHERE user_id=%s
+        AND date BETWEEN %s AND %s
+        GROUP BY vendor_id, milk_type
+    """, (user_id, from_date, to_date))
+
+    milk_map = {}
+    for r in cursor.fetchall():
+        vid = int(r["vendor_id"])
+        milk_map.setdefault(vid, {})[r["milk_type"]] = float(r["qty"] or 0)
+
+    # -------------------------------------------------
+    # 3. Food sack totals - aggregated in SQL itself
+    # -------------------------------------------------
+    cursor.execute("""
+        SELECT fs.vendor_id, SUM(COALESCE(fs.total_cost,0)) AS total
+        FROM food_sack fs
+        WHERE fs.user_id=%s
+        AND fs.date BETWEEN %s AND %s
+        GROUP BY fs.vendor_id
+    """, (user_id, from_date, to_date))
+
+    food_map = {
+        int(f["vendor_id"]): float(f["total"] or 0)
+        for f in cursor.fetchall()
+    }
+
+    # -------------------------------------------------
+    # 4. Advances
+    # -------------------------------------------------
+    cursor.execute("""
+        SELECT vendor_id,SUM(amount) total
+        FROM advance
+        WHERE user_id=%s
+        AND date BETWEEN %s AND %s
+        GROUP BY vendor_id
+    """, (user_id, from_date, to_date))
+
+    adv_map = {
+        int(a["vendor_id"]): float(a["total"] or 0)
+        for a in cursor.fetchall()
+    }
+
+    # -------------------------------------------------
+    # 5. Rates - fetched ONCE for all vendors (no N+1 queries)
+    # -------------------------------------------------
+    if isinstance(from_date, str):
+        rate_date = datetime.strptime(from_date, "%Y-%m-%d").date()
+    else:
+        rate_date = from_date
+
+    # 5a. vendor-specific special rates
+    cursor.execute("""
+        SELECT vendor_id, cow_rate, buffalo_rate, date_from
+        FROM vendor_milk_rates
+        WHERE user_id=%s
+        AND date_from<=%s
+        ORDER BY vendor_id, date_from DESC
+    """, (user_id, rate_date))
+
+    special_rate_map = {}
+    for r in cursor.fetchall():
+        vid = int(r["vendor_id"])
+        if vid not in special_rate_map:      # first row per vendor = most recent (DESC order)
+            special_rate_map[vid] = r
+
+    # 5b. default rates (cow / buffalo)
+    cursor.execute("""
+        SELECT animal, rate, date_from
+        FROM milk_rates
+        WHERE user_id=%s
+        AND date_from<=%s
+        ORDER BY animal, date_from DESC
+    """, (user_id, rate_date))
+
+    default_rate_map = {}
+    for r in cursor.fetchall():
+        if r["animal"] not in default_rate_map:   # first row per animal = most recent
+            default_rate_map[r["animal"]] = float(r["rate"])
+
+    def resolve_rate(vid, animal):
+        special = special_rate_map.get(vid)
+        if special:
+            val = special.get(f"{animal}_rate")
+            if val:
+                return float(val)
+        return default_rate_map.get(animal, 0)
+
+    # -------------------------------------------------
+    # 6. Build Excel
+    # -------------------------------------------------
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Bank Report"
+
+    headers = [
+        "Sr.No",
+        "Beneficiary IFSC CODE",
+        "Beneficiary Account No",
+        "Beneficiary Name",
+        "ADDRESS",
+        "AMOUNT"
+    ]
+
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.font = Font(bold=True)
+
+    sr = 1
+
+    for vendor in vendors:
+
+        vid = int(vendor["vendor_id"])
+
+        cow_rate = resolve_rate(vid, "cow")
+        buffalo_rate = resolve_rate(vid, "buffalo")
+
+        qtys = milk_map.get(vid, {})
+        cow_qty = qtys.get("cow", 0)
+        buffalo_qty = qtys.get("buffalo", 0)
+
+        cow_cost = cow_qty * cow_rate
+        buffalo_cost = buffalo_qty * buffalo_rate
+
+        food_total = food_map.get(vid, 0)
+        advance = adv_map.get(vid, 0)
+
+        final_payable = int(round(
+            (cow_cost + buffalo_cost) - (advance + food_total)
+        ))
+
+        ws.append([
+            sr,
+            vendor.get("ifsc_code") or "",
+            vendor.get("account_no") or "",
+            vendor.get("name"),
+            vendor.get("address"),
+            final_payable
+        ])
+
+        ws.cell(row=sr + 1, column=6).number_format = '0'
+        sr += 1
+
+    # -------------------------------------------------
+    # 7. Fixed column widths (fast - no full-sheet scan)
+    # -------------------------------------------------
+    widths = [8, 20, 22, 28, 32, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    cursor.close()
+
+    # Response headers are already fetch/blob-compatible as-is;
+    # the only real problem was the redirect() on error paths above.
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"Bank_Report_{from_date}_to_{to_date}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 # -------------------------------
 # HEAD ROUTES
 # -------------------------------
@@ -3139,4 +3428,4 @@ import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)

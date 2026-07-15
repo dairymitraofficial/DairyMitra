@@ -19,15 +19,27 @@
     <div>
         <label class="form-label">दूध प्रकार</label>
         <select name="milk_type" class="form-select">
-            <option value="cow" {% if vendor.milk_type == 'cow' %}selected{% endif %}>🐄 गायीचे दूध</option>
-            <option value="buffalo" {% if vendor.milk_type == 'buffalo' %}selected{% endif %}>🐃 म्हशीचे दूध</option>
-            <option value="both" {% if vendor.milk_type == 'both' %}selected{% endif %}>दोन्ही</option>
+            <option value="cow" {% if vendor.milk_type=='cow' %}selected{% endif %}>🐄 गायीचे दूध</option>
+            <option value="buffalo" {% if vendor.milk_type=='buffalo' %}selected{% endif %}>🐃 म्हशीचे दूध</option>
+            <option value="both" {% if vendor.milk_type=='both' %}selected{% endif %}>दोन्ही</option>
         </select>
     </div>
 
     <div>
         <label class="form-label">फोन नंबर</label>
         <input type="text" name="phone" value="{{ vendor.phone }}" placeholder="फोन नंबर" class="form-input">
+    </div>
+
+    <div>
+        <label class="form-label">IFSC Code</label>
+        <input type="text" name="ifsc_code" value="{{ vendor.ifsc_code if vendor.ifsc_code else '' }}"
+            placeholder="SBIN0001234" class="form-input">
+    </div>
+
+    <div>
+        <label class="form-label">Bank Account Number</label>
+        <input type="text" name="account_no" value="{{ vendor.account_no if vendor.account_no else '' }}"
+            placeholder="123456789012" class="form-input">
     </div>
 
     <button type="submit" class="btn btn-primary">विक्रेता अपडेट करा</button>

@@ -259,5 +259,12 @@ CREATE INDEX idx_rates_user
 ON milk_rates(user_id,date_from);
 
 
+CREATE INDEX idx_vendor_rates_user_date
+ON vendor_milk_rates(user_id, date_from);
 
 
+
+ALTER TABLE vendors
+ADD COLUMN ifsc_code VARCHAR(20),
+ADD COLUMN account_no VARCHAR(30);
+DESCRIBE vendors;

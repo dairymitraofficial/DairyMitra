@@ -213,21 +213,41 @@ document.documentElement.setAttribute("data-theme","dark")
 </script>
 <script>
 
-function showLoader(){
-  const loader=document.getElementById("global-loader");
-  if(loader) loader.style.display="flex";
+function showLoader() {
+    const loader = document.getElementById("global-loader");
+    if (loader) {
+        loader.style.display = "flex";
+    }
 }
 
-function hideLoader(){
-  const loader=document.getElementById("global-loader");
-  if(loader) loader.style.display="none";
+function hideLoader() {
+    const loader = document.getElementById("global-loader");
+    if (loader) {
+        loader.style.display = "none";
+    }
 }
 
-document.querySelectorAll("form").forEach(form=>{
-  form.addEventListener("submit",()=>{
-      showLoader();
-  });
+// सर्व forms साठी loader
+document.querySelectorAll("form").forEach(form => {
+
+    form.addEventListener("submit", function () {
+
+        // Bank Report form skip करा
+        if (this.id === "bankReportForm") {
+            return;
+        }
+
+        showLoader();
+
+    });
+
 });
+
+// Page load झाल्यावर loader hide
+window.addEventListener("load", hideLoader);
+
+// Browser Back/Forward झाल्यावर
+window.addEventListener("pageshow", hideLoader);
 
 </script>
 </body>
