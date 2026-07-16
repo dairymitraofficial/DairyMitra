@@ -3272,7 +3272,7 @@ def generate_bank_report():
     # -------------------------------------------------
     # 7. Fixed column widths
     # -------------------------------------------------
-    widths = [8, 20, 22, 28, 32, 14]
+    widths = [8, 20, 22, 40, 32, 14]
     for ws in (same_ws, other_ws):
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
