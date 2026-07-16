@@ -29,8 +29,8 @@ from ai.vendor_analysis import analyze_vendor
 
 from functools import lru_cache
 
-
-
+import zipfile
+from openpyxl.styles import Font, Border, Side, Alignment
 from backup_system import create_backup, create_full_backup, restore_backup, list_backups
 
 load_dotenv()
@@ -604,6 +604,7 @@ def add_vendor():
     if request.method == 'POST':
 
         name = request.form.get('name')
+        name_en = request.form.get('name_en')          # NEW
         vendor_id = int(request.form.get('vendor_id'))
         address = request.form.get('address')
         milk_type = request.form.get('milk_type')
@@ -627,6 +628,7 @@ def add_vendor():
                 'vendors/add_vendor.html',
                 next_vendor_id=next_vendor_id,
                 name=name,
+                name_en=name_en,                        # NEW
                 address=address,
                 milk_type=milk_type,
                 phone=phone,
@@ -641,6 +643,7 @@ def add_vendor():
             (
                 vendor_id,
                 name,
+                name_en,
                 address,
                 milk_type,
                 phone,
@@ -649,10 +652,11 @@ def add_vendor():
                 user_id
             )
             VALUES
-            (%s,%s,%s,%s,%s,%s,%s,%s)
+            (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             vendor_id,
             name,
+            name_en,                                    # NEW
             address,
             milk_type,
             phone,
@@ -672,24 +676,6 @@ def add_vendor():
         'vendors/add_vendor.html',
         next_vendor_id=next_vendor_id
     )
-
-@app.route('/vendor_list', methods=['GET'])
-def vendor_list():
-    search = request.args.get('search', '')
-    cursor = SafeCursor(mysql.connection.cursor())
-
-    query = "SELECT * FROM vendors WHERE user_id = %s"
-    params = [session['id']]
-
-    if search:
-        query += " AND (name LIKE %s OR vendor_id LIKE %s)"
-        params.extend([f"%{search}%", f"%{search}%"])
-
-    query += " ORDER BY vendor_id ASC"
-
-    cursor.execute(query, params)
-    vendors = cursor.fetchall()
-    return render_template('vendors/vendor_list.html', vendors=vendors)
 
 
 @app.route('/edit_vendor/<string:vendor_id>', methods=['GET', 'POST'])
@@ -711,6 +697,7 @@ def edit_vendor(vendor_id):
     if request.method == 'POST':
 
         name = request.form.get('name')
+        name_en = request.form.get('name_en')           # NEW
         address = request.form.get('address')
         milk_type = request.form.get('milk_type')
         phone = request.form.get('phone')
@@ -721,6 +708,7 @@ def edit_vendor(vendor_id):
             UPDATE vendors
             SET
                 name=%s,
+                name_en=%s,
                 address=%s,
                 milk_type=%s,
                 phone=%s,
@@ -731,6 +719,7 @@ def edit_vendor(vendor_id):
                 AND user_id=%s
         """, (
             name,
+            name_en,                                    # NEW
             address,
             milk_type,
             phone,
@@ -766,6 +755,27 @@ def edit_vendor(vendor_id):
         'vendors/edit_vendor.html',
         vendor=vendor
     )
+
+@app.route('/vendor_list', methods=['GET'])
+def vendor_list():
+    search = request.args.get('search', '')
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    query = "SELECT * FROM vendors WHERE user_id = %s"
+    params = [session['id']]
+
+    if search:
+        query += " AND (name LIKE %s OR vendor_id LIKE %s)"
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    query += " ORDER BY vendor_id ASC"
+
+    cursor.execute(query, params)
+    vendors = cursor.fetchall()
+    return render_template('vendors/vendor_list.html', vendors=vendors)
+
+
+
 
 
 @app.route('/delete_vendor/<int:vendor_id>', methods=['POST'])
@@ -2916,6 +2926,8 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 
+from openpyxl.styles import Font, Border, Side, Alignment
+
 @app.route('/generate_bank_report', methods=['GET', 'POST'])
 def generate_bank_report():
 
@@ -2932,8 +2944,6 @@ def generate_bank_report():
     from_date = request.form.get("from_date")
     to_date = request.form.get("to_date")
 
-    # CHANGED: return JSON + 400 instead of flash()+redirect(),
-    # so fetch() can tell an error apart from a real file download.
     if not from_date or not to_date:
         return jsonify({"error": "Please select both dates."}), 400
 
@@ -2944,10 +2954,44 @@ def generate_bank_report():
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
     # -------------------------------------------------
+    # 0. Owner's bank details (IFSC comparison + header info)
+    # -------------------------------------------------
+    cursor.execute("""
+        SELECT ifsc_code, account_holder_name, branch_name
+        FROM bank_settings
+        WHERE user_id=%s
+    """, (user_id,))
+
+    owner_bank = cursor.fetchone()
+
+    if not owner_bank or not owner_bank.get("ifsc_code"):
+        cursor.close()
+        return jsonify({
+            "error": "Please set up your Bank Settings (IFSC code) before generating this report."
+        }), 400
+
+    owner_bank_code = owner_bank["ifsc_code"].strip().upper()[:4]
+    owner_name = owner_bank.get("account_holder_name") or ""
+    branch_name = owner_bank.get("branch_name") or ""
+
+    # -------------------------------------------------
+    # 0b. Logged-in user's name (top line of report header)
+    # ASSUMPTION: users table has columns id, name.
+    # Change "name" / "users" below if your schema differs.
+    # -------------------------------------------------
+    cursor.execute("""
+            SELECT dairy_name
+            FROM users
+            WHERE id=%s
+    """, (user_id,))
+    user_row = cursor.fetchone()
+    dairy_name = (user_row.get("dairy_name") if user_row else "") or ""
+
+    # -------------------------------------------------
     # 1. Vendors
     # -------------------------------------------------
     cursor.execute("""
-        SELECT vendor_id,name,address,milk_type,
+        SELECT vendor_id,name,name_en,address,milk_type,
                ifsc_code,account_no
         FROM vendors
         WHERE user_id=%s
@@ -3011,7 +3055,6 @@ def generate_bank_report():
     else:
         rate_date = from_date
 
-    # 5a. vendor-specific special rates
     cursor.execute("""
         SELECT vendor_id, cow_rate, buffalo_rate, date_from
         FROM vendor_milk_rates
@@ -3023,10 +3066,9 @@ def generate_bank_report():
     special_rate_map = {}
     for r in cursor.fetchall():
         vid = int(r["vendor_id"])
-        if vid not in special_rate_map:      # first row per vendor = most recent (DESC order)
+        if vid not in special_rate_map:
             special_rate_map[vid] = r
 
-    # 5b. default rates (cow / buffalo)
     cursor.execute("""
         SELECT animal, rate, date_from
         FROM milk_rates
@@ -3037,7 +3079,7 @@ def generate_bank_report():
 
     default_rate_map = {}
     for r in cursor.fetchall():
-        if r["animal"] not in default_rate_map:   # first row per animal = most recent
+        if r["animal"] not in default_rate_map:
             default_rate_map[r["animal"]] = float(r["rate"])
 
     def resolve_rate(vid, animal):
@@ -3049,11 +3091,20 @@ def generate_bank_report():
         return default_rate_map.get(animal, 0)
 
     # -------------------------------------------------
-    # 6. Build Excel
+    # 6. Styles (reused everywhere)
     # -------------------------------------------------
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Bank Report"
+    FONT_NAME = "Times New Roman"
+
+    header_font = Font(name=FONT_NAME, size=12, bold=True)      # dairy/owner/date/branch lines
+    col_header_font = Font(name=FONT_NAME, size=12, bold=True)  # table column headings
+    data_font = Font(name=FONT_NAME, size=12, bold=False)       # normal data rows
+
+    thin = Side(style="thin", color="000000")
+    full_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left_align = Alignment(horizontal="left", vertical="center")
+    right_align = Alignment(horizontal="right", vertical="center")
 
     headers = [
         "Sr.No",
@@ -3063,12 +3114,81 @@ def generate_bank_report():
         "ADDRESS",
         "AMOUNT"
     ]
+    last_col = len(headers)
+    last_col_letter = get_column_letter(last_col)
 
-    for c, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=c, value=h)
-        cell.font = Font(bold=True)
+    def style_range(ws, cell_range):
+        """Apply border to every cell in a merged/unmerged range string like 'A1:F1'."""
+        for row in ws[cell_range]:
+            for cell in row:
+                cell.border = full_border
 
-    sr = 1
+    def write_header_block(ws):
+        """
+        Row1: dairy/user name
+        Row2: owner name
+        Row3: date range
+        Row4: branch
+        Row5: column headings
+        Returns the row number where data should start.
+        """
+        # Row 1 - dairy/login name
+        ws.merge_cells(f"A1:{last_col_letter}1")
+        c = ws["A1"]
+        c.value = dairy_name
+        c.font = header_font
+        c.alignment = center_align
+        style_range(ws, f"A1:{last_col_letter}1")
+
+        # Row 2 - owner name
+        ws.merge_cells(f"A2:{last_col_letter}2")
+        c = ws["A2"]
+        c.value = owner_name
+        c.font = header_font
+        c.alignment = center_align
+        style_range(ws, f"A2:{last_col_letter}2")
+
+        # Row 3 - date range
+        ws.merge_cells(f"A3:{last_col_letter}3")
+        c = ws["A3"]
+        c.value = f"DATE:- {from_date} TO {to_date}"
+        c.font = header_font
+        c.alignment = center_align
+        style_range(ws, f"A3:{last_col_letter}3")
+
+        # Row 4 - branch
+        ws.merge_cells(f"A4:{last_col_letter}4")
+        c = ws["A4"]
+        c.value = f"Branch:- {branch_name}"
+        c.font = header_font
+        c.alignment = right_align
+        style_range(ws, f"A4:{last_col_letter}4")
+
+        # Row 5 - column headings
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=5, column=col_idx, value=h)
+            cell.font = col_header_font
+            cell.alignment = center_align
+            cell.border = full_border
+
+        return 6  # first data row
+
+    def new_workbook(title):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title
+        start_row = write_header_block(ws)
+        return wb, ws, start_row
+
+    same_wb, same_ws, same_start_row = new_workbook("Same Bank Report")
+    other_wb, other_ws, other_start_row = new_workbook("Other Bank Report")
+
+    same_row = same_start_row
+    other_row = other_start_row
+    same_sr = 1
+    other_sr = 1
+    same_total = 0
+    other_total = 0
 
     for vendor in vendors:
 
@@ -3091,38 +3211,186 @@ def generate_bank_report():
             (cow_cost + buffalo_cost) - (advance + food_total)
         ))
 
-        ws.append([
+        vendor_ifsc = (vendor.get("ifsc_code") or "").strip().upper()
+        vendor_bank_code = vendor_ifsc[:4]
+
+        if vendor_bank_code and vendor_bank_code == owner_bank_code:
+            ws, row_num, sr = same_ws, same_row, same_sr
+            same_total += final_payable
+        else:
+            ws, row_num, sr = other_ws, other_row, other_sr
+            other_total += final_payable
+
+        row_values = [
             sr,
-            vendor.get("ifsc_code") or "",
+            vendor_ifsc,
             vendor.get("account_no") or "",
-            vendor.get("name"),
+            (vendor.get("name_en") or vendor.get("name") or "").upper(),
             vendor.get("address"),
             final_payable
-        ])
+        ]
 
-        ws.cell(row=sr + 1, column=6).number_format = '0'
-        sr += 1
+        for col_idx, val in enumerate(row_values, 1):
+            cell = ws.cell(row=row_num, column=col_idx, value=val)
+            cell.font = data_font
+            cell.border = full_border
+            if col_idx == 6:
+                cell.number_format = '0'
+                cell.alignment = right_align
+            else:
+                cell.alignment = left_align if col_idx != 1 else center_align
+
+        if ws is same_ws:
+            same_row += 1
+            same_sr += 1
+        else:
+            other_row += 1
+            other_sr += 1
 
     # -------------------------------------------------
-    # 7. Fixed column widths (fast - no full-sheet scan)
+    # 6b. Total row at the bottom of each sheet
+    # -------------------------------------------------
+    def write_total_row(ws, row_num, total_amount):
+        ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=last_col - 1)
+        label_cell = ws.cell(row=row_num, column=1, value="Total")
+        label_cell.font = col_header_font
+        label_cell.alignment = right_align
+        label_cell.border = full_border
+
+        for col_idx in range(2, last_col):
+            ws.cell(row=row_num, column=col_idx).border = full_border
+
+        total_cell = ws.cell(row=row_num, column=last_col, value=int(round(total_amount)))
+        total_cell.font = col_header_font
+        total_cell.number_format = '0'
+        total_cell.alignment = right_align
+        total_cell.border = full_border
+
+    write_total_row(same_ws, same_row, same_total)
+    write_total_row(other_ws, other_row, other_total)
+
+    # -------------------------------------------------
+    # 7. Fixed column widths
     # -------------------------------------------------
     widths = [8, 20, 22, 28, 32, 14]
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
+    for ws in (same_ws, other_ws):
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        # header rows a bit taller so wrapped text looks clean
+        for r in (1, 2, 3, 4):
+            ws.row_dimensions[r].height = 20
 
     cursor.close()
 
-    # Response headers are already fetch/blob-compatible as-is;
-    # the only real problem was the redirect() on error paths above.
+    # -------------------------------------------------
+    # 8. Save both workbooks into a single ZIP
+    # -------------------------------------------------
+    same_bytes = BytesIO()
+    same_wb.save(same_bytes)
+    same_bytes.seek(0)
+
+    other_bytes = BytesIO()
+    other_wb.save(other_bytes)
+    other_bytes.seek(0)
+
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Same_Bank_Report.xlsx", same_bytes.getvalue())
+        zf.writestr("Other_Bank_Report.xlsx", other_bytes.getvalue())
+    zip_buffer.seek(0)
+
     return send_file(
-        output,
+        zip_buffer,
         as_attachment=True,
-        download_name=f"Bank_Report_{from_date}_to_{to_date}.xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        download_name=f"Bank_Reports_{from_date}_to_{to_date}.zip",
+        mimetype="application/zip"
+    )
+@app.route('/bank_settings', methods=['GET', 'POST'])
+def bank_settings():
+
+    if 'id' not in session:
+        return redirect(url_for('login'))
+
+    user_id = session['id']
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    if request.method == "POST":
+
+        account_holder_name = request.form.get("account_holder_name")
+        bank_name = request.form.get("bank_name")
+        branch_name = request.form.get("branch_name")
+        account_no = request.form.get("account_no")
+        ifsc_code = request.form.get("ifsc_code").upper()
+
+        cursor.execute("""
+            SELECT id
+            FROM bank_settings
+            WHERE user_id=%s
+        """, (user_id,))
+
+        exists = cursor.fetchone()
+
+        if exists:
+
+            cursor.execute("""
+                UPDATE bank_settings
+                SET
+                    account_holder_name=%s,
+                    bank_name=%s,
+                    branch_name=%s,
+                    account_no=%s,
+                    ifsc_code=%s
+                WHERE user_id=%s
+            """, (
+                account_holder_name,
+                bank_name,
+                branch_name,
+                account_no,
+                ifsc_code,
+                user_id
+            ))
+
+            flash("Bank details updated successfully.", "success")
+
+        else:
+
+            cursor.execute("""
+                INSERT INTO bank_settings
+                (
+                    user_id,
+                    account_holder_name,
+                    bank_name,
+                    branch_name,
+                    account_no,
+                    ifsc_code
+                )
+                VALUES (%s,%s,%s,%s,%s,%s)
+            """, (
+                user_id,
+                account_holder_name,
+                bank_name,
+                branch_name,
+                account_no,
+                ifsc_code
+            ))
+
+            flash("Bank details saved successfully.", "success")
+
+        mysql.connection.commit()
+
+    cursor.execute("""
+        SELECT *
+        FROM bank_settings
+        WHERE user_id=%s
+    """, (user_id,))
+
+    bank = cursor.fetchone()
+
+    cursor.close()
+
+    return render_template(
+        "settings/bank_settings.html",
+        bank=bank
     )
 # -------------------------------
 # HEAD ROUTES

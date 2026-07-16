@@ -268,3 +268,22 @@ ALTER TABLE vendors
 ADD COLUMN ifsc_code VARCHAR(20),
 ADD COLUMN account_no VARCHAR(30);
 DESCRIBE vendors;
+
+
+CREATE TABLE bank_settings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL UNIQUE,
+
+    account_holder_name VARCHAR(150) NOT NULL,
+    bank_name VARCHAR(100) NOT NULL,
+    branch_name VARCHAR(100),
+
+    account_no VARCHAR(50) NOT NULL,
+    ifsc_code VARCHAR(20) NOT NULL,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);

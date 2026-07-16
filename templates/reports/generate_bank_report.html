@@ -99,10 +99,10 @@ form.addEventListener("submit", async function(e){
             }
         );
 
-        // CHANGED: distinguish a real file download from a JSON error.
-        // Previously a validation failure redirected to the GET page
-        // (status 200), so response.ok was true and the HTML got
-        // downloaded as a fake .xlsx instead of showing an error.
+        // Distinguish a real file download from a JSON error.
+        // A validation failure returns JSON + non-200, so response.ok
+        // is false and we show the error instead of downloading HTML/JSON
+        // as a fake file.
         if (!response.ok) {
             let message = "Failed to download report.";
             try {
@@ -122,7 +122,9 @@ form.addEventListener("submit", async function(e){
 
         a.href = url;
 
-        a.download = "Bank_Report.xlsx";
+        // CHANGED: now a ZIP containing Same_Bank_Report.xlsx
+        // and Other_Bank_Report.xlsx instead of a single .xlsx
+        a.download = "Bank_Reports.zip";
 
         document.body.appendChild(a);
 
@@ -142,9 +144,6 @@ form.addEventListener("submit", async function(e){
     }
     finally{
 
-        // CHANGED: this now always fires correctly, whether the
-        // request succeeded, failed with a JSON error, or threw
-        // for any other reason (network error, etc).
         hideLoader();
 
     }
