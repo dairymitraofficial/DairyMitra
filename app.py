@@ -594,6 +594,7 @@ def add_vendor():
         FROM vendors
         WHERE user_id=%s
     """, (session['id'],))
+    
 
     res = cursor.fetchone()
 
