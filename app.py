@@ -401,7 +401,9 @@ def ensure_user_id_int():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
 
-    if 'loggedin' in session:
+    # ✅ Bug 5 fix: only auto-redirect owner/staff sessions to dashboard.
+    # A logged-in customer must NOT be bounced to the owner dashboard.
+    if session.get('loggedin') and session.get('role') in ('owner', 'staff'):
         return redirect(url_for('dashboard'))
 
     if request.method == 'POST':
@@ -469,58 +471,6 @@ def login():
 
     return render_template('auth/login.html')
 
-@app.route('/customer/login', methods=['GET', 'POST'])
-def customer_login():
-
-    if request.method == 'POST':
-
-        dairy_id = request.form.get('dairy_id')
-        phone = request.form.get('phone')
-
-        cursor = SafeCursor(mysql.connection.cursor())
-
-        cursor.execute("""
-            SELECT
-                v.id,
-                v.vendor_id,
-                v.name,
-                v.phone,
-                v.user_id,
-                u.dairy_name,
-                u.dairy_code
-            FROM vendors v
-            JOIN users u
-                ON v.user_id = u.id
-            WHERE
-                u.dairy_code=%s
-                AND v.phone=%s
-            LIMIT 1
-        """, (dairy_id, phone))
-
-        customer = cursor.fetchone()
-
-        if customer:
-
-            session.clear()
-            session.permanent = True
-
-            session['loggedin'] = True
-            session['role'] = 'customer'
-
-            session['customer_id'] = customer['id']
-            session['vendor_id'] = customer['vendor_id']
-            session['vendor_db_id'] = customer['id']
-            session['owner_id'] = customer['user_id']
-            session['customer_name'] = customer['name']
-            session['dairy_name'] = customer['dairy_name']
-
-            flash("Customer Login Successful", "success")
-
-            return redirect(url_for("customer_dashboard"))
-
-        flash("Invalid Dairy ID or Mobile Number", "danger")
-
-    return render_template("customer/login.html")
 
 @app.route('/logout')
 def logout():
@@ -741,9 +691,16 @@ def reset_password():
 
 @app.before_request
 def require_login():
+    print("=" * 60)
+    print("PATH :", request.path)
+    print("COOKIE:", request.cookies)
+    print("SESSION:", dict(session))
+    print("=" * 60)
     """
     Basic protection
     + Auto logout disabled staff
+    + Role-aware redirect: customer routes -> /customer/login,
+      owner/staff routes -> /login
     """
 
     allowed = {
@@ -756,15 +713,36 @@ def require_login():
         'reset_password',
         'static',
         'healthcheck',
-        'favicon'
+        'favicon',
+
+        'service_worker',
+        'manifest',
     }
+
+    # ✅ Bug 2 fix: detect whether this request belongs to the customer area
+    endpoint = request.endpoint or ""
+
+    is_customer_route = (
+        endpoint.startswith("customer_")
+        or request.path.startswith("/customer")
+    )
 
     # -----------------------------
     # LOGIN CHECK
     # -----------------------------
     if request.endpoint and request.endpoint not in allowed:
+
         if 'loggedin' not in session:
+            if is_customer_route:
+                return redirect(url_for('customer_login'))
             return redirect(url_for('login'))
+
+        # logged in, but wrong role for this area
+        if is_customer_route and session.get('role') != 'customer':
+            return redirect(url_for('login'))
+
+        if not is_customer_route and session.get('role') == 'customer':
+            return redirect(url_for('customer_login'))
 
     # -----------------------------
     # NORMALIZE SESSION ID
@@ -780,6 +758,8 @@ def require_login():
         except Exception:
             session.clear()
             flash("Session expired. Please login again.", "danger")
+            if is_customer_route:
+                return redirect(url_for('customer_login'))
             return redirect(url_for('login'))
 
     # -----------------------------
@@ -828,8 +808,27 @@ def require_login():
 # ------------------------------
 from datetime import date
 
+# ------------------------------
+# Dashboard
+# ------------------------------
+from datetime import date
+
 @app.route("/")
 def dashboard():
+
+    # ✅ role-aware entry point (fix for shared PWA start_url issue)
+    if "loggedin" not in session:
+        flash("Unauthorized request, please log in.", "danger")
+        return redirect(url_for("login"))
+
+    if session.get("role") == "customer":
+        return redirect(url_for("customer_dashboard"))
+
+    if session.get("role") not in ("owner", "staff"):
+        session.clear()
+        flash("Session invalid. Please login again.", "danger")
+        return redirect(url_for("login"))
+
     if "id" not in session:
         flash("Unauthorized request, please log in.", "danger")
         return redirect(url_for("login"))
@@ -872,10 +871,9 @@ def dashboard():
     return render_template(
         "dashboard.html",
         morning_milk=morning_milk,
-    evening_milk=evening_milk,
-    total_vendors=total_vendors
+        evening_milk=evening_milk,
+        total_vendors=total_vendors
     )
-
 
 
 
@@ -4131,9 +4129,16 @@ def service_worker():
 
 @app.after_request
 def disable_cache(response):
+
+    if request.path.startswith("/static") \
+       or request.path == "/manifest.json" \
+       or request.path == "/service-worker.js":
+        return response
+
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+
     return response
 
 
@@ -4223,9 +4228,70 @@ def date_indian(value):
 #========================================================================================================================
 #========================================================Customer========================================================
 #========================================================================================================================
+@app.route('/customer/login', methods=['GET', 'POST'])
+def customer_login():
+
+    if request.method == 'POST':
+
+        dairy_id = request.form.get('dairy_id')
+        phone = request.form.get('phone')
+
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+            SELECT
+                v.id,
+                v.vendor_id,
+                v.name,
+                v.phone,
+                v.user_id,
+                u.dairy_name,
+                u.dairy_code
+            FROM vendors v
+            JOIN users u
+                ON v.user_id = u.id
+            WHERE
+                u.dairy_code=%s
+                AND v.phone=%s
+            LIMIT 1
+        """, (dairy_id, phone))
+
+        customer = cursor.fetchone()
+
+        if customer:
+
+            session.clear()
+            session.permanent = True
+
+            session['loggedin'] = True
+            session['role'] = 'customer'
+
+            # ✅ Bug 3/6 fix: keep 'id' consistent with owner/staff sessions
+            # (owner_id is the dairy owner this customer belongs to)
+            session['id'] = customer['user_id']
+
+            session['customer_id'] = customer['id']
+            session['vendor_id'] = customer['vendor_id']
+            session['vendor_db_id'] = customer['id']
+            session['owner_id'] = customer['user_id']
+            session['customer_name'] = customer['name']
+            session['dairy_name'] = customer['dairy_name']
+
+            flash("Customer Login Successful", "success")
+
+            return redirect(url_for("customer_dashboard"))
+
+        flash("Invalid Dairy ID or Mobile Number", "danger")
+        print("LOGIN SUCCESS SESSION:", dict(session))
+        print("REDIRECT URL:", url_for("customer_dashboard"))
+
+
+    return render_template("customer/login.html")
 
 @app.route("/customer/dashboard")
 def customer_dashboard():
+    print("ENTER CUSTOMER DASHBOARD")
+    print("SESSION IN DASHBOARD:", dict(session))
 
     if session.get("role") != "customer":
         flash("Please login first.", "warning")
@@ -4831,9 +4897,8 @@ def customer_notification_context():
 
 @app.route("/customer/logout")
 def customer_logout():
-    session.pop("role", None)
-    session.pop("vendor_id", None)
-    session.pop("owner_id", None)
+    # ✅ Bug 1 fix: clear the whole session, not just 3 keys
+    session.clear()
     flash("Logged out successfully.", "success")
     return redirect(url_for("customer_login"))
 
