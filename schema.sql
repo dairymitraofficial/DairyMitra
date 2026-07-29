@@ -287,3 +287,176 @@ CREATE TABLE bank_settings (
 
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+
+
+-- =========================================
+-- CREATE DATABASE
+-- =========================================
+
+CREATE DATABASE IF NOT EXISTS dairymitra;
+USE dairymitra;
+
+-- =========================================
+-- USERS TABLE UPDATE
+-- =========================================
+
+ALTER TABLE users
+ADD COLUMN dairy_code VARCHAR(20) UNIQUE;
+
+-- =========================================
+-- VENDORS TABLE UPDATE
+-- =========================================
+
+ALTER TABLE vendors
+ADD COLUMN name_en VARCHAR(255) NULL AFTER name,
+ADD COLUMN ifsc_code VARCHAR(20),
+ADD COLUMN account_no VARCHAR(30);
+
+-- =========================================
+-- BANK SETTINGS
+-- =========================================
+
+CREATE TABLE IF NOT EXISTS bank_settings (
+
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    user_id INT NOT NULL UNIQUE,
+
+    account_holder_name VARCHAR(150) NOT NULL,
+    bank_name VARCHAR(100) NOT NULL,
+    branch_name VARCHAR(100),
+
+    account_no VARCHAR(50) NOT NULL,
+    ifsc_code VARCHAR(20) NOT NULL,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
+-- =========================================
+-- CUSTOMER NOTIFICATIONS
+-- =========================================
+
+CREATE TABLE IF NOT EXISTS customer_notifications (
+
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    -- Dairy Owner ID
+    user_id INT NOT NULL,
+
+    -- Vendor ID
+    vendor_id INT NOT NULL,
+
+    -- Notification Type
+    type ENUM(
+        'milk',
+        'food_sack',
+        'advance'
+    ) NOT NULL,
+
+    -- Notification Title
+    title VARCHAR(255) NOT NULL,
+
+    -- Notification Message
+    message TEXT NOT NULL,
+
+    -- Read Status
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Created Time
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
+-- =========================================
+-- CUSTOMER NOTIFICATION INDEXES
+-- =========================================
+
+CREATE INDEX idx_notification_vendor
+ON customer_notifications(vendor_id);
+
+CREATE INDEX idx_notification_user
+ON customer_notifications(user_id);
+
+CREATE INDEX idx_notification_read
+ON customer_notifications(is_read);
+
+CREATE INDEX idx_notification_created
+ON customer_notifications(created_at);
+
+CREATE INDEX idx_notification_lookup
+ON customer_notifications(user_id, vendor_id, created_at);
+
+-- =========================================
+-- PUSH SUBSCRIPTIONS
+-- =========================================
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    -- Dairy Owner ID
+    user_id INT NOT NULL,
+
+    -- Vendor ID
+    vendor_id INT NOT NULL,
+
+    -- Browser Push Endpoint
+    endpoint VARCHAR(700) NOT NULL UNIQUE,
+
+    -- Public Encryption Key
+    p256dh TEXT NOT NULL,
+
+    -- Authentication Secret
+    auth TEXT NOT NULL,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
+-- =========================================
+-- PUSH SUBSCRIPTION INDEX
+-- =========================================
+
+CREATE INDEX idx_push_lookup
+ON push_subscriptions(user_id, vendor_id);
+
+-- =========================================
+-- VENDOR MILK RATE INDEX
+-- =========================================
+
+CREATE INDEX idx_vendor_rates_user_date
+ON vendor_milk_rates(user_id, date_from);
+
+-- =========================================
+-- SAMPLE QUERY
+-- =========================================
+
+SELECT
+    v.vendor_id,
+    v.name
+FROM vendors v
+JOIN users u
+    ON v.user_id = u.id
+WHERE u.email = 'jagadalerushi99@gmail.com'
+ORDER BY v.vendor_id;
+
+-- =========================================
+-- VERIFY TABLES
+-- =========================================
+
+DESCRIBE users;
+DESCRIBE vendors;

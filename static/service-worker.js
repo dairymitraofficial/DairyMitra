@@ -1,26 +1,22 @@
-
 /* =====================================
    DairyMitr Service Worker
-   Version: v12
-   App Shell + Offline Navigation Fix
+   Production Ready
 ===================================== */
 
-const CACHE_NAME = "dairy-mitr-cache-v12";
+const CACHE_NAME = "dairy-mitr-cache-v21";
 
 const APP_SHELL = [
-
   "/",
-  "/dashboard",
-  "/milk_collection",
+  "/customer/dashboard",
+  "/customer/notifications",
+  "/customer/profile",
 
   "/static/css/style.css",
   "/static/css/receipt.css",
   "/static/css/about.css",
 
   "/static/manifest.json"
-
 ];
-
 
 /* =====================================
    INSTALL
@@ -28,18 +24,23 @@ const APP_SHELL = [
 
 self.addEventListener("install", event => {
 
-  console.log("Service Worker Installing");
-
   event.waitUntil(
 
-    caches.open(CACHE_NAME)
-      .then(cache => {
+    caches.open(CACHE_NAME).then(async cache => {
 
-        console.log("Caching App Shell");
+      for (const url of APP_SHELL) {
 
-        return cache.addAll(APP_SHELL);
+        try {
+          await cache.add(url);
+          console.log("Cached:", url);
 
-      })
+        } catch (err) {
+          console.log("Skipped:", url);
+        }
+
+      }
+
+    })
 
   );
 
@@ -54,26 +55,23 @@ self.addEventListener("install", event => {
 
 self.addEventListener("activate", event => {
 
-  console.log("Service Worker Activated");
-
   event.waitUntil(
 
-    caches.keys().then(keys => {
+    caches.keys().then(keys =>
 
-      return Promise.all(
+      Promise.all(
 
         keys.map(key => {
 
-          if(key !== CACHE_NAME){
-            console.log("Deleting old cache:", key);
+          if (key !== CACHE_NAME) {
             return caches.delete(key);
           }
 
         })
 
-      );
+      )
 
-    })
+    )
 
   );
 
@@ -90,36 +88,42 @@ self.addEventListener("fetch", event => {
 
   const request = event.request;
 
-  if(request.method !== "GET") return;
+  if (request.method !== "GET") return;
 
-
-  /* -------- NAVIGATION REQUESTS -------- */
-
-  if(request.mode === "navigate"){
+  if (request.mode === "navigate") {
 
     event.respondWith(
 
-      caches.match(request)
-        .then(cachedPage => {
+      caches.match(request).then(cached => {
 
-          if(cachedPage){
-            return cachedPage;
-          }
+        if (cached) {
+          return cached;
+        }
 
-          return fetch(request)
-            .then(networkResponse => {
+        return fetch(request)
 
-              const clone = networkResponse.clone();
+          .then(response => {
+
+            if (response.ok) {
+
+              const clone = response.clone();
 
               caches.open(CACHE_NAME)
-              .then(cache => cache.put(request, clone));
+                .then(cache => cache.put(request, clone));
 
-              return networkResponse;
+            }
 
-            })
-            .catch(() => caches.match("/dashboard"));
+            return response;
 
-        })
+          })
+
+          .catch(() => {
+
+            return caches.match("/");
+
+          });
+
+      })
 
     );
 
@@ -127,34 +131,134 @@ self.addEventListener("fetch", event => {
 
   }
 
-
-  /* -------- STATIC FILES -------- */
-
   event.respondWith(
 
-    caches.match(request)
-      .then(cached => {
+    caches.match(request).then(cached => {
 
-        if(cached){
-          return cached;
-        }
+      if (cached) {
 
-        return fetch(request)
-          .then(response => {
+        return cached;
+
+      }
+
+      return fetch(request)
+
+        .then(response => {
+
+          if (
+            response &&
+            response.status === 200 &&
+            response.type === "basic"
+          ) {
 
             const clone = response.clone();
 
             caches.open(CACHE_NAME)
-            .then(cache => cache.put(request, clone));
+              .then(cache => cache.put(request, clone));
 
-            return response;
+          }
 
-          })
-          .catch(() => caches.match(request));
+          return response;
 
-      })
+        })
+
+        .catch(() => caches.match(request));
+
+    })
 
   );
 
 });
 
+
+/* =====================================
+   PUSH
+===================================== */
+
+self.addEventListener("push", event => {
+
+  if (!event.data) return;
+
+  let data;
+
+  try {
+
+    data = event.data.json();
+
+  } catch {
+
+    data = {
+      title: "DairyMitr",
+      body: event.data.text()
+    };
+
+  }
+
+  event.waitUntil(
+
+    self.registration.showNotification(
+
+      data.title || "DairyMitr",
+
+      {
+
+        body: data.body || "",
+
+        icon: "/static/images/logo.png",
+
+        badge: "/static/images/logo.png",
+
+        vibrate: [200, 100, 200],
+
+        data: {
+
+          url: data.url || "/customer/dashboard"
+
+        }
+
+      }
+
+    )
+
+  );
+
+});
+
+
+/* =====================================
+   NOTIFICATION CLICK
+===================================== */
+
+self.addEventListener("notificationclick", event => {
+
+  event.notification.close();
+
+  const url = event.notification.data.url || "/customer/dashboard";
+
+  event.waitUntil(
+
+    clients.matchAll({
+
+      type: "window",
+
+      includeUncontrolled: true
+
+    }).then(windowClients => {
+
+      for (const client of windowClients) {
+
+        if (client.url.includes(url)) {
+
+          return client.focus();
+
+        }
+
+      }
+
+      return clients.openWindow(url);
+
+    })
+
+  );
+
+});

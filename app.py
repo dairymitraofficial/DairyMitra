@@ -1,26 +1,26 @@
-
 import os
 import re
 import secrets
 import string
 import logging
+import bisect
 from datetime import datetime, timezone, date, timedelta
 from email.message import EmailMessage
-from zoneinfo import ZoneInfo   
+from zoneinfo import ZoneInfo
 import MySQLdb.cursors
 
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify,send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file, g
 from flask_mysqldb import MySQL
 
 from werkzeug.security import generate_password_hash, check_password_hash
 from twilio.rest import Client
 import smtplib
 from flask import send_from_directory
-from functools import wraps   
+from functools import wraps
 import sib_api_v3_sdk
 from sib_api_v3_sdk.rest import ApiException
-
+from push import send_web_push, VAPID_PUBLIC_KEY
 
 import pandas as pd
 from ai.milk_prediction import predict_milk
@@ -40,7 +40,7 @@ load_dotenv()
 # ------------------------------
 app = Flask(__name__)
 
-app.secret_key = os.getenv("SECRET_KEY", "d7e5f19e4c2a4a7b93c6f405f3d9a8c3b1a0c9e7e8d5f4c2a7b6f5e3a9d0c8f2") 
+app.secret_key = os.getenv("SECRET_KEY", "d7e5f19e4c2a4a7b93c6f405f3d9a8c3b1a0c9e7e8d5f4c2a7b6f5e3a9d0c8f2")
 
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -58,6 +58,26 @@ app.config['MYSQL_CONNECT_TIMEOUT'] = 30
 app.config['MYSQL_READ_DEFAULT_FILE'] = ''
 app.config['MYSQL_AUTOCOMMIT'] = True
 mysql = MySQL(app)
+
+# ==============================================================================
+# PERFORMANCE NOTES (read-only, no behavior change)
+# ------------------------------------------------------------------------------
+# Recommended MySQL indexes (run these directly on the database - not part of
+# this file, since Flask/MySQLdb does not manage schema/indexes):
+#
+#   CREATE INDEX idx_milk_collection_user_date        ON milk_collection(user_id, date);
+#   CREATE INDEX idx_milk_collection_vendor_date       ON milk_collection(vendor_id, date);
+#   CREATE INDEX idx_milk_collection_user_vendor_date  ON milk_collection(user_id, vendor_id, date);
+#   CREATE INDEX idx_advance_user_date                 ON advance(user_id, date);
+#   CREATE INDEX idx_advance_vendor_date               ON advance(vendor_id, date);
+#   CREATE INDEX idx_food_sack_user_date               ON food_sack(user_id, date);
+#   CREATE INDEX idx_food_sack_vendor_date             ON food_sack(vendor_id, date);
+#   CREATE INDEX idx_vendor_milk_rates_vendor_date      ON vendor_milk_rates(vendor_id, user_id, date_from);
+#   CREATE INDEX idx_milk_rates_user_animal_date        ON milk_rates(user_id, animal, date_from);
+#   CREATE INDEX idx_vendors_user                       ON vendors(user_id);
+#   CREATE INDEX idx_staff_owner                        ON staff(owner_id);
+# ==============================================================================
+
 
 class SafeCursor:
     def __init__(self, cursor):
@@ -95,6 +115,183 @@ class SafeCursor:
     def __getattr__(self, name):
         return getattr(self.cursor, name)
 
+
+def push_to_customer(user_id, vendor_id, title, body, url="/customer/dashboard"):
+    print("========== PUSH TO CUSTOMER ==========")
+    print("User:", user_id)
+    print("Vendor:", vendor_id)
+
+    try:
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+            SELECT id, endpoint, p256dh, auth
+            FROM push_subscriptions
+            WHERE user_id=%s AND vendor_id=%s
+        """, (user_id, vendor_id))
+
+        subs = cursor.fetchall()
+
+        print("Subscriptions Found:", len(subs))
+
+        for s in subs:
+            print("Sending Push -> Subscription ID:", s["id"])
+
+            subscription_info = {
+                "endpoint": s["endpoint"],
+                "keys": {
+                    "p256dh": s["p256dh"],
+                    "auth": s["auth"]
+                }
+            }
+
+            success, expired = send_web_push(
+                subscription_info,
+                title,
+                body,
+                url
+            )
+
+            print("Result:", success, expired)
+
+            if expired:
+                print("Deleting expired subscription:", s["id"])
+
+                cursor.execute(
+                    "DELETE FROM push_subscriptions WHERE id=%s",
+                    (s["id"],)
+                )
+                mysql.connection.commit()
+
+        cursor.close()
+
+    except Exception as e:
+        print("PUSH ERROR:", e)
+        logging.exception("push_to_customer failed")
+
+
+def create_notification(
+    user_id,
+    vendor_id,
+    notification_type,
+    title,
+    message
+):
+    print("========== CREATE_NOTIFICATION ==========")
+    print(user_id, vendor_id, notification_type)
+
+    try:
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+            INSERT INTO customer_notifications
+            (
+                user_id,
+                vendor_id,
+                type,
+                title,
+                message
+            )
+            VALUES (%s,%s,%s,%s,%s)
+        """, (
+            user_id,
+            vendor_id,
+            notification_type,
+            title,
+            message
+        ))
+
+        print("INSERT SUCCESS")
+
+        mysql.connection.commit()
+
+        print("COMMIT SUCCESS")
+
+        cursor.close()
+
+        push_to_customer(user_id, vendor_id, title, message)
+
+    except Exception as e:
+        print("ERROR IN create_notification:")
+        print(type(e).__name__)
+        print(str(e))
+        raise
+
+def create_milk_notification(
+    user_id,
+    vendor_id,
+    date,
+    slot,
+    milk_type,
+    quantity
+):
+
+    create_notification(
+        user_id=user_id,
+        vendor_id=vendor_id,
+        notification_type="milk",
+
+        title="Milk Collected",
+
+        message=f"""Date : {date}
+Time : {slot.title()}
+Animal : {milk_type.title()}
+Quantity : {quantity} L"""
+    )
+
+def create_food_sack_notification(
+    user_id,
+    vendor_id,
+    date,
+    food_name,
+    quantity
+):
+
+    create_notification(
+        user_id=user_id,
+        vendor_id=vendor_id,
+        notification_type="food_sack",
+
+        title="Food Sack Issued",
+
+        message=f"""Date : {date}
+Food : {food_name}
+Quantity : {quantity}"""
+    )
+
+def create_advance_notification(
+    user_id,
+    vendor_id,
+    date,
+    amount
+):
+
+    create_notification(
+        user_id=user_id,
+        vendor_id=vendor_id,
+        notification_type="advance",
+
+        title="Advance Received",
+
+        message=f"""Date : {date}
+Amount : ₹{amount}"""
+    )
+
+def get_unread_notification_count(user_id, vendor_id):
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    cursor.execute("""
+        SELECT COUNT(*) AS total
+        FROM customer_notifications
+        WHERE user_id=%s
+        AND vendor_id=%s
+        AND is_read=0
+    """, (user_id, vendor_id))
+
+    result = cursor.fetchone()
+    cursor.close()
+
+    return result["total"] if result else 0
 # Twilio
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
@@ -266,6 +463,57 @@ def login():
 
     return render_template('auth/login.html')
 
+@app.route('/customer/login', methods=['GET', 'POST'])
+def customer_login():
+
+    if request.method == 'POST':
+
+        dairy_id = request.form.get('dairy_id')
+        phone = request.form.get('phone')
+
+        cursor = SafeCursor(mysql.connection.cursor())
+
+        cursor.execute("""
+            SELECT
+                v.id,
+                v.vendor_id,
+                v.name,
+                v.phone,
+                v.user_id,
+                u.dairy_name,
+                u.dairy_code
+            FROM vendors v
+            JOIN users u
+                ON v.user_id = u.id
+            WHERE
+                u.dairy_code=%s
+                AND v.phone=%s
+            LIMIT 1
+        """, (dairy_id, phone))
+
+        customer = cursor.fetchone()
+
+        if customer:
+
+            session.clear()
+
+            session['loggedin'] = True
+            session['role'] = 'customer'
+            session['customer_id'] = customer['id']
+            session['vendor_id'] = customer['vendor_id']
+            session['vendor_db_id'] = customer['id']
+            session['owner_id'] = customer['user_id']
+            session['customer_name'] = customer['name']
+            session['dairy_name'] = customer['dairy_name']
+
+            flash("Customer Login Successful", "success")
+
+            return redirect(url_for("customer_dashboard"))
+
+        flash("Invalid Dairy ID or Mobile Number", "danger")
+
+    return render_template("customer/login.html")
+
 @app.route('/logout')
 def logout():
     session.clear()
@@ -346,22 +594,64 @@ def verify_account():
     if not temp:
         flash('Session expired. Signup again.', 'warning')
         return redirect(url_for('signup'))
+
     if request.method == 'POST':
         otp_entered = request.form.get('otp')
         if otp_entered == temp.get('otp'):
             cursor = SafeCursor(mysql.connection.cursor())
+
+            # ----------------------------
+            # Insert new user
+            # ----------------------------
             cursor.execute("""
-                INSERT INTO users (email, password, phone, dairy_name, is_verified)
-                VALUES (%s, %s, %s, %s, TRUE)
-            """, (temp['email'], temp['password'], temp['phone'], temp['dairy_name']))
+                INSERT INTO users
+                (
+                    email,
+                    password,
+                    phone,
+                    dairy_name,
+                    is_verified
+                )
+                VALUES
+                (%s, %s, %s, %s, TRUE)
+            """, (
+                temp['email'],
+                temp['password'],
+                temp['phone'],
+                temp['dairy_name']
+            ))
+
             mysql.connection.commit()
+
+            # ----------------------------
+            # Generate Dairy ID
+            # ----------------------------
+            user_id = cursor.lastrowid
+            dairy_code = f"DM{user_id:06d}"
+
+            cursor.execute("""
+                UPDATE users
+                SET dairy_code = %s
+                WHERE id = %s
+            """, (
+                dairy_code,
+                user_id
+            ))
+
+            mysql.connection.commit()
+
             session.pop('temp_signup', None)
-            flash('Account verified. Please login.', 'success')
+
+            flash(
+                f'Account verified successfully! Your Dairy ID is {dairy_code}',
+                'success'
+            )
+
             return redirect(url_for('login'))
         else:
             flash('Invalid OTP.', 'danger')
-    return render_template('auth/verify_account.html', email=temp.get('email'))
 
+    return render_template('auth/verify_account.html', email=temp.get('email'))
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
@@ -450,6 +740,7 @@ def require_login():
 
     allowed = {
         'login',
+        'customer_login',
         'signup',
         'verify_account',
         'forgot_password',
@@ -923,7 +1214,6 @@ def reset_staff_password(staff_id):
     return render_template("staff/reset_staff_password.html")
 
 @app.route('/disable_staff/<int:staff_id>')
-@app.route('/disable_staff/<int:staff_id>')
 def disable_staff(staff_id):
 
     # login check
@@ -965,7 +1255,6 @@ def disable_staff(staff_id):
     flash("Staff disabled successfully.", "warning")
     return redirect(url_for("staff_list"))
 
-@app.route('/enable_staff/<int:staff_id>')
 @app.route('/enable_staff/<int:staff_id>')
 def enable_staff(staff_id):
 
@@ -1080,57 +1369,151 @@ def get_vendors_cached(user_id):
 
     return cursor.fetchall()
 
-@lru_cache(maxsize=512)
-def get_vendor_rate(cursor, vendor_id, animal, entry_date):
 
-    uid = int(session.get('id',0))
+# ==============================================================================
+# OPTIMIZED RATE RESOLUTION
+# ------------------------------------------------------------------------------
+# BEFORE: get_vendor_rate() ran 1-2 SQL queries EVERY time it was called. It was
+#         wrapped in @lru_cache, but since a fresh `cursor` object was passed in
+#         on every call, the cache key was never the same twice - so caching
+#         never actually happened. In report pages (payment, calculation,
+#         receipt_all_vendors) this function is called once per milk row, so a
+#         vendor with 60 rows in the date range triggered ~120 extra queries,
+#         and a payment report with 50 vendors could trigger thousands of
+#         queries -> Gunicorn worker timeouts.
+#
+# AFTER:  All of a user's vendor-specific rates (vendor_milk_rates) and default
+#         rates (milk_rates) are loaded ONCE per request (2 queries total,
+#         cached on Flask's `g` request-scoped object) and kept sorted by date.
+#         Each call to get_vendor_rate() is then a bisect (O(log n)) lookup in
+#         memory - zero additional SQL queries per row/vendor.
+#
+# Query count for a report with V vendors and R total rate lookups:
+#   BEFORE: up to 2 * R database queries
+#   AFTER:  2 database queries total (regardless of V or R)
+#
+# Output/behavior is identical: same "latest date_from <= entry_date" rule,
+# same vendor-special-rate-first-then-default fallback, same return values.
+# ==============================================================================
 
-    # ensure entry_date is date object
-    if isinstance(entry_date, bytes):
-        entry_date = entry_date.decode()
+def _to_date(d):
+    if isinstance(d, bytes):
+        d = d.decode()
+    if isinstance(d, str):
+        return datetime.strptime(d, "%Y-%m-%d").date()
+    if isinstance(d, datetime):
+        return d.date()
+    return d  # already a date object
 
-    if isinstance(entry_date, str):
-        entry_date = datetime.strptime(entry_date, "%Y-%m-%d").date()
-    
+
+def _find_latest(struct, entry_date):
+    """struct = {'dates': [...ascending...], 'rows': [...]} -> latest row with date <= entry_date"""
+    if not struct or not struct['dates']:
+        return None
+    idx = bisect.bisect_right(struct['dates'], entry_date) - 1
+    if idx >= 0:
+        return struct['rows'][idx]
+    return None
+
+
+def _load_rate_cache(user_id):
+    """Loads & sorts all rate data for this user ONCE per request (cached on flask.g)."""
+    if not hasattr(g, '_rate_cache_by_user'):
+        g._rate_cache_by_user = {}
+
+    if user_id in g._rate_cache_by_user:
+        return g._rate_cache_by_user[user_id]
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    # ---- vendor-specific special rates ----
+    cursor.execute("""
+        SELECT vendor_id, cow_rate, buffalo_rate, date_from
+        FROM vendor_milk_rates
+        WHERE user_id=%s
+        ORDER BY vendor_id ASC, date_from ASC
+    """, (user_id,))
+
+    vendor_rows_raw = cursor.fetchall()
+
+    vendor_grouped = {}
+    for r in vendor_rows_raw:
+        vid = int(r['vendor_id'])
+        vendor_grouped.setdefault(vid, []).append(r)
+
+    vendor_rates = {}
+    for vid, rows in vendor_grouped.items():
+        rows_sorted = sorted(rows, key=lambda r: _to_date(r['date_from']))
+        vendor_rates[vid] = {
+            'dates': [_to_date(r['date_from']) for r in rows_sorted],
+            'rows': rows_sorted
+        }
+
+    # ---- default (fallback) rates ----
+    cursor.execute("""
+        SELECT animal, rate, date_from
+        FROM milk_rates
+        WHERE user_id=%s
+        ORDER BY animal ASC, date_from ASC
+    """, (user_id,))
+
+    default_rows_raw = cursor.fetchall()
+
+    default_grouped = {}
+    for r in default_rows_raw:
+        default_grouped.setdefault(r['animal'], []).append(r)
+
+    default_rates = {}
+    for animal, rows in default_grouped.items():
+        rows_sorted = sorted(rows, key=lambda r: _to_date(r['date_from']))
+        default_rates[animal] = {
+            'dates': [_to_date(r['date_from']) for r in rows_sorted],
+            'rows': rows_sorted
+        }
+
+    cursor.close()
+
+    cache = {'vendor_rates': vendor_rates, 'default_rates': default_rates}
+    g._rate_cache_by_user[user_id] = cache
+    return cache
+
+
+def get_vendor_rate(cursor, vendor_id, animal, entry_date, user_id=None):
+    """
+    Resolves the milk rate for a vendor/animal/date.
+    `cursor` is accepted for backward compatibility with existing call sites
+    but is no longer used for extra queries - resolution now happens against
+    an in-memory, per-request cache (see _load_rate_cache above).
+    Return values are identical to the original implementation.
+    """
+    if user_id is None:
+        user_id = int(session.get('id', 0))
+
+    entry_date = _to_date(entry_date)
+
+    cache = _load_rate_cache(user_id)
+
+    vid = int(vendor_id)
+
     # -------------------------
     # vendor special rate
     # -------------------------
-    cursor.execute("""
-        SELECT cow_rate, buffalo_rate
-        FROM vendor_milk_rates
-        WHERE vendor_id=%s
-        AND user_id=%s
-        AND date_from<=%s
-        ORDER BY date_from DESC
-        LIMIT 1
-    """, (vendor_id, uid, entry_date))
-
-    special = cursor.fetchone()
+    special = _find_latest(cache['vendor_rates'].get(vid), entry_date)
 
     if special:
 
-        if animal == "cow" and special['cow_rate']:
+        if animal == "cow" and special.get('cow_rate'):
             return float(special['cow_rate'])
 
-        if animal == "buffalo" and special['buffalo_rate']:
+        if animal == "buffalo" and special.get('buffalo_rate'):
             return float(special['buffalo_rate'])
 
     # -------------------------
     # fallback default rate
     # -------------------------
-    cursor.execute("""
-        SELECT rate
-        FROM milk_rates
-        WHERE user_id=%s
-        AND animal=%s
-        AND date_from<=%s
-        ORDER BY date_from DESC
-        LIMIT 1
-    """, (uid, animal, entry_date))
+    default_row = _find_latest(cache['default_rates'].get(animal), entry_date)
 
-    r = cursor.fetchone()
-
-    return float(r['rate']) if r else 0
+    return float(default_row['rate']) if default_row else 0
 
 @app.route('/vendor_rate', methods=['GET','POST'])
 def vendor_rate():
@@ -1359,13 +1742,22 @@ def submit_milk_ajax():
 
         mysql.connection.commit()
 
+        # Create customer notification
+        create_milk_notification(
+            user_id=session['id'],
+            vendor_id=vendor_id,
+            date=date_val,
+            slot=slot_val,
+            milk_type=milk_type,
+            quantity=qty
+        )
+
         # Audit log
         audit_log(
             session['id'],
             'insert_milk',
             f"{vendor_id} {date_val} {slot_val} {milk_type} {qty}"
         )
-
         # ===============================
         # Send SMS to vendor
         # ===============================
@@ -1404,6 +1796,14 @@ def submit_bulk_milk_ajax():
     """
     Expects JSON: { vendors: [{vendor_id, milk_type, quantity, date, slot}, ...], date?, slot? }
     Returns structured JSON: { saved: [...], skipped: [{vendor_id, reason}], message: "..."}
+
+    OPTIMIZATION NOTE:
+    BEFORE: for N items this ran up to 4 queries PER item (ownership check,
+            duplicate check, insert, phone lookup) = up to 4N queries.
+    AFTER:  vendor ownership+phone and existing milk_collection rows for the
+            involved dates are prefetched in 2 bulk queries up front, then the
+            loop only does an INSERT per saved row (unavoidable, it's a write).
+            Query count drops from ~4N to ~(2 + N).
     """
     ensure_user_id_int()
     payload = request.get_json(silent=True) or {}
@@ -1418,7 +1818,39 @@ def submit_bulk_milk_ajax():
     saved = []
     skipped = []
 
+    user_id = session['id']
     cursor = SafeCursor(mysql.connection.cursor())
+
+    # ---- Prefetch vendor ownership + phone for all vendor_ids referenced ----
+    vendor_ids = list({str(item.get('vendor_id')) for item in vendors_list if item.get('vendor_id')})
+    vendor_map = {}
+    if vendor_ids:
+        placeholders = ",".join(["%s"] * len(vendor_ids))
+        cursor.execute(
+            f"SELECT vendor_id, phone FROM vendors WHERE user_id=%s AND vendor_id IN ({placeholders})",
+            tuple([user_id] + vendor_ids)
+        )
+        for row in cursor.fetchall():
+            vendor_map[str(row['vendor_id'])] = row
+
+    # ---- Prefetch existing milk_collection rows for involved dates ----
+    dates_involved = list({str(item.get('date') or date_default) for item in vendors_list})
+    existing_set = set()
+    if dates_involved:
+        placeholders = ",".join(["%s"] * len(dates_involved))
+        cursor.execute(
+            f"""SELECT vendor_id, date, slot, milk_type
+                FROM milk_collection
+                WHERE user_id=%s AND date IN ({placeholders})""",
+            tuple([user_id] + dates_involved)
+        )
+        for row in cursor.fetchall():
+            d = row['date']
+            dstr = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)
+            existing_set.add((str(row['vendor_id']), dstr, row['slot'], row['milk_type']))
+
+    staff_id = session.get("staff_id")
+
     for item in vendors_list:
         vendor_id = item.get('vendor_id')
         milk_type = item.get('milk_type')
@@ -1435,25 +1867,20 @@ def submit_bulk_milk_ajax():
             skipped.append({"vendor_id": vendor_id, "reason": "invalid quantity"})
             continue
 
-        # ownership
-        cursor.execute("SELECT 1 FROM vendors WHERE vendor_id = %s AND user_id = %s", (vendor_id, session['id']))
-        if not cursor.fetchone():
+        # ownership (from prefetched map)
+        vendor = vendor_map.get(str(vendor_id))
+        if not vendor:
             skipped.append({"vendor_id": vendor_id, "reason": "unauthorized vendor"})
             continue
 
-        # duplicate?
-        cursor.execute("""
-            SELECT id FROM milk_collection
-            WHERE vendor_id=%s AND user_id=%s AND date=%s AND slot=%s AND milk_type=%s
-        """, (vendor_id, session['id'], date_val, slot_val, milk_type))
-        if cursor.fetchone():
+        # duplicate? (from prefetched set)
+        key = (str(vendor_id), str(date_val), slot_val, milk_type)
+        if key in existing_set:
             skipped.append({"vendor_id": vendor_id, "reason": "already exists"})
             continue
 
         # insert
         try:
-           
-            staff_id = session.get("staff_id")
 
             cursor.execute("""
             INSERT INTO milk_collection
@@ -1461,7 +1888,7 @@ def submit_bulk_milk_ajax():
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
             vendor_id,
-            session['id'],
+            user_id,
             staff_id,
             date_val,
             slot_val,
@@ -1469,12 +1896,10 @@ def submit_bulk_milk_ajax():
             qty
             ))
             saved.append({"vendor_id": vendor_id, "date": date_val, "slot": slot_val, "milk_type": milk_type, "quantity": qty})
+            existing_set.add(key)  # prevent duplicate within the same batch
 
-            # send sms (non-blocking)
-            pc = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-            pc.execute("SELECT phone FROM vendors WHERE vendor_id = %s AND user_id = %s", (vendor_id, session['id']))
-            v = pc.fetchone()
-            if v and v.get('phone'):
+            # send sms (non-blocking, phone already prefetched - no extra query)
+            if vendor.get('phone'):
                 slot_map = {"morning": "सकाळ", "evening": "संध्याकाळ"}
                 milk_map = {"cow": "गाय", "buffalo": "म्हैस"}
 
@@ -1482,7 +1907,7 @@ def submit_bulk_milk_ajax():
                 milk_marathi = milk_map.get(milk_type.lower(), milk_type)
 
                 message = f"{date_val} रोजी तुमचे {milk_marathi}चे {slot_marathi}चे {qty} लिटर दूध जमा झाले."
-                send_sms(v['phone'], message)
+                send_sms(vendor['phone'], message)
 
         except Exception:
             logging.exception("Error on bulk insert")
@@ -1490,7 +1915,17 @@ def submit_bulk_milk_ajax():
             continue
 
     mysql.connection.commit()
-    audit_log(session['id'], 'bulk_insert_milk', f"saved={len(saved)} skipped={len(skipped)}")
+    # Create notifications for all successfully saved entries
+    for item in saved:
+        create_milk_notification(
+            user_id=user_id,
+            vendor_id=item["vendor_id"],
+            date=item["date"],
+            slot=item["slot"],
+            milk_type=item["milk_type"],
+            quantity=item["quantity"]
+        )
+    audit_log(user_id, 'bulk_insert_milk', f"saved={len(saved)} skipped={len(skipped)}")
     result = {"saved": saved, "skipped": skipped, "message": f"Saved {len(saved)} entries; skipped {len(skipped)} entries."}
     status = 207 if skipped else 200
     return jsonify(result), status
@@ -1537,6 +1972,15 @@ ORDER BY vendor_id ASC
             data = request.form
             entry_date = request.form.get('date') or date.today().isoformat()
 
+        # OPTIMIZATION: prefetch existing advance rows for this date ONCE
+        # instead of running 1 SELECT per vendor (BEFORE: up to N queries,
+        # AFTER: 1 query, regardless of vendor count).
+        cursor.execute("""
+            SELECT id, vendor_id, amount FROM advance
+            WHERE user_id=%s AND date=%s
+        """, (session['id'], entry_date))
+        existing_map = {str(r['vendor_id']): r for r in cursor.fetchall()}
+
         for v in vendors:
             vid = v['vendor_id']
             # For JSON payload, the key will match "advance_<vendor_id>"
@@ -1548,16 +1992,13 @@ ORDER BY vendor_id ASC
             except:
                 continue
 
-            # check existing
-            cursor.execute(
-                "SELECT id, amount FROM advance WHERE vendor_id=%s AND user_id=%s AND date=%s",
-                (vid, session['id'], entry_date)
-            )
-            existing = cursor.fetchone()
+            # check existing (from prefetched map)
+            existing = existing_map.get(str(vid))
             if existing:
                 # update to new total (keep behavior: add amount)
                 new_amt = float(existing['amount']) + amt
                 cursor.execute("UPDATE advance SET amount=%s WHERE id=%s", (new_amt, existing['id']))
+                existing['amount'] = new_amt  # keep map consistent within loop
             else:
                 cursor.execute(
                     "INSERT INTO advance (vendor_id, user_id, date, amount) VALUES (%s,%s,%s,%s)",
@@ -1667,14 +2108,52 @@ def submit_food_sack_ajax():
 
 @app.route('/submit_bulk_food_sack_ajax', methods=['POST'])
 def submit_bulk_food_sack_ajax():
-
+    """
+    OPTIMIZATION NOTE:
+    BEFORE: for N entries this ran 2 queries PER entry (rate lookup, existing
+            check) plus 1 write = up to 3N queries.
+    AFTER:  sack rates and existing food_sack rows are prefetched in 2 bulk
+            queries up front; the loop only issues the necessary write per
+            entry. Query count drops from ~3N to ~(2 + N).
+    """
     data = request.get_json()
     entries = data.get("entries", [])
 
     if not entries:
         return jsonify({"message": "No data"}), 400
 
+    user_id = session['id']
     cursor = SafeCursor(mysql.connection.cursor())
+
+    # ---- Prefetch all needed sack rates ----
+    sack_ids = list({int(item['sack_id']) for item in entries if item.get('sack_id')})
+    rate_map = {}
+    if sack_ids:
+        placeholders = ",".join(["%s"] * len(sack_ids))
+        cursor.execute(
+            f"SELECT id, rate FROM food_sack_rates WHERE user_id=%s AND id IN ({placeholders})",
+            tuple([user_id] + sack_ids)
+        )
+        for r in cursor.fetchall():
+            rate_map[int(r['id'])] = float(r['rate'])
+
+    # ---- Prefetch existing food_sack rows for involved vendor/date combos ----
+    vendor_ids = list({item['vendor_id'] for item in entries if item.get('vendor_id')})
+    dates_involved = list({item['date'] for item in entries if item.get('date')})
+    existing_map = {}
+    if vendor_ids and dates_involved:
+        vp = ",".join(["%s"] * len(vendor_ids))
+        dp = ",".join(["%s"] * len(dates_involved))
+        cursor.execute(
+            f"""SELECT id, vendor_id, date, sack_rate_id
+                FROM food_sack
+                WHERE user_id=%s AND vendor_id IN ({vp}) AND date IN ({dp})""",
+            tuple([user_id] + vendor_ids + dates_involved)
+        )
+        for row in cursor.fetchall():
+            d = row['date']
+            dstr = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)
+            existing_map[(str(row['vendor_id']), dstr, int(row['sack_rate_id']))] = row['id']
 
     saved = 0
 
@@ -1685,37 +2164,35 @@ def submit_bulk_food_sack_ajax():
         sack_id = int(item['sack_id'])
         date_val = item['date']
 
-        cursor.execute("""
-            SELECT rate FROM food_sack_rates
-            WHERE id=%s AND user_id=%s
-        """, (sack_id, session['id']))
-        res = cursor.fetchone()
-
-        if not res:
+        rate = rate_map.get(sack_id)
+        if rate is None:
             continue
 
-        rate = float(res['rate'])
         total = qty * rate
 
-        cursor.execute("""
-            SELECT id FROM food_sack
-            WHERE vendor_id=%s AND user_id=%s AND date=%s AND sack_rate_id=%s
-        """, (vendor_id, session['id'], date_val, sack_id))
+        key = (str(vendor_id), str(date_val), sack_id)
+        existing_id = existing_map.get(key)
 
-        existing = cursor.fetchone()
-
-        if existing:
+        if existing_id == "PENDING":
+            # This exact combo was inserted earlier in THIS SAME batch.
+            cursor.execute("""
+                UPDATE food_sack
+                SET sack_qty=%s, total_cost=%s
+                WHERE vendor_id=%s AND user_id=%s AND date=%s AND sack_rate_id=%s
+            """, (qty, total, vendor_id, user_id, date_val, sack_id))
+        elif existing_id:
             cursor.execute("""
                 UPDATE food_sack
                 SET sack_qty=%s, total_cost=%s
                 WHERE id=%s
-            """, (qty, total, existing['id']))
+            """, (qty, total, existing_id))
         else:
             cursor.execute("""
                 INSERT INTO food_sack
                 (vendor_id, user_id, date, sack_qty, sack_rate_id, sack_rate, total_cost)
                 VALUES (%s,%s,%s,%s,%s,%s,%s)
-            """, (vendor_id, session['id'], date_val, qty, sack_id, rate, total))
+            """, (vendor_id, user_id, date_val, qty, sack_id, rate, total))
+            existing_map[key] = "PENDING"
 
         saved += 1
 
@@ -2210,6 +2687,9 @@ def calculation():
         mcq=ecq=mbq=ebq=0
         mcp=ecp=mbp=ebp=0
 
+        # NOTE: get_vendor_rate() now resolves against an in-memory,
+        # per-request rate cache (see _load_rate_cache) instead of hitting
+        # MySQL on every row - same output, far fewer queries.
         for row in milk_data:
 
             rate = get_vendor_rate(cursor, vendor_id, row['milk_type'], row['date'])
@@ -2284,6 +2764,21 @@ def calculation():
     
 @app.route('/payment', methods=['GET', 'POST'])
 def payment():
+    """
+    OPTIMIZATION NOTE:
+    BEFORE: for V vendors this ran 3 queries PER vendor (milk_collection,
+            advance, food_sack) = 3V queries, PLUS get_vendor_rate() ran up
+            to 2 more queries per milk row inside that loop (effectively
+            unbounded). A 100-vendor report over a month could hit thousands
+            of queries -> worker timeout.
+    AFTER:  milk_collection, advance and food_sack are each fetched in ONE
+            bulk, grouped query for the whole date range (3 queries total),
+            then looped in Python using dict lookups. get_vendor_rate() now
+            reads from the in-memory rate cache. Total queries for the whole
+            report: ~5, regardless of vendor count.
+    Output is mathematically identical - same GROUP BY math, just done once
+    instead of once per vendor.
+    """
 
     if 'id' not in session:
         flash('Please login first.', 'danger')
@@ -2310,31 +2805,55 @@ def payment():
 
     if start_date and end_date:
 
+        user_id = session['id']
+
         # load vendors
         cursor.execute("""
             SELECT vendor_id,name
             FROM vendors
             WHERE user_id=%s
             ORDER BY vendor_id ASC
-        """,(session['id'],))
+        """,(user_id,))
 
         vendors = cursor.fetchall()
+
+        # ---- bulk milk data for ALL vendors in one query ----
+        cursor.execute("""
+            SELECT vendor_id, date, milk_type, SUM(quantity) AS qty
+            FROM milk_collection
+            WHERE user_id=%s AND date BETWEEN %s AND %s
+            GROUP BY vendor_id, date, milk_type
+        """, (user_id, start_date, end_date))
+
+        milk_map = {}
+        for r in cursor.fetchall():
+            vid = str(r['vendor_id'])
+            milk_map.setdefault(vid, []).append(r)
+
+        # ---- bulk advance totals for ALL vendors in one query ----
+        cursor.execute("""
+            SELECT vendor_id, SUM(amount) AS total_advance
+            FROM advance
+            WHERE user_id=%s AND date BETWEEN %s AND %s
+            GROUP BY vendor_id
+        """, (user_id, start_date, end_date))
+
+        adv_map = {str(r['vendor_id']): float(r['total_advance'] or 0) for r in cursor.fetchall()}
+
+        # ---- bulk food sack totals for ALL vendors in one query ----
+        cursor.execute("""
+            SELECT vendor_id, SUM(total_cost) AS total_food
+            FROM food_sack
+            WHERE user_id=%s AND date BETWEEN %s AND %s
+            GROUP BY vendor_id
+        """, (user_id, start_date, end_date))
+
+        food_map = {str(r['vendor_id']): float(r['total_food'] or 0) for r in cursor.fetchall()}
 
         for v in vendors:
 
             vendor_id = v['vendor_id']
-
-            # milk entries
-            cursor.execute("""
-                SELECT date,milk_type,SUM(quantity) qty
-                FROM milk_collection
-                WHERE vendor_id=%s
-                AND user_id=%s
-                AND date BETWEEN %s AND %s
-                GROUP BY date,milk_type
-            """,(vendor_id,session['id'],start_date,end_date))
-
-            milk_entries = cursor.fetchall()
+            milk_entries = milk_map.get(str(vendor_id), [])
 
             total_cow = 0
             total_buffalo = 0
@@ -2348,7 +2867,8 @@ def payment():
                     cursor,
                     vendor_id,
                     m['milk_type'],
-                    m['date']
+                    m['date'],
+                    user_id=user_id
                 )
 
                 qty = float(m['qty'])
@@ -2363,29 +2883,8 @@ def payment():
                     total_buffalo += qty
                     buffalo_cost += qty * rate
 
-            # advance
-            cursor.execute("""
-                SELECT SUM(amount) AS total_advance
-                FROM advance
-                WHERE vendor_id=%s
-                AND user_id=%s
-                AND date BETWEEN %s AND %s
-            """,(vendor_id,session['id'],start_date,end_date))
-
-            adv = cursor.fetchone()['total_advance'] or 0
-
-
-            # food sack
-            cursor.execute("""
-                SELECT SUM(total_cost) AS total_food
-                FROM food_sack
-                WHERE vendor_id=%s
-                AND user_id=%s
-                AND date BETWEEN %s AND %s
-            """,(vendor_id,session['id'],start_date,end_date))
-
-            food = cursor.fetchone()['total_food'] or 0
-
+            adv = adv_map.get(str(vendor_id), 0)
+            food = food_map.get(str(vendor_id), 0)
 
             total_milk_payment = round(cow_cost + buffalo_cost, 2)
 
@@ -2507,6 +3006,9 @@ def receipt_all_vendors():
 
         # -------------------------
         # PROCESS VENDORS
+        # NOTE: get_vendor_rate() below now resolves from the in-memory,
+        # per-request rate cache (2 queries loaded once, shared across all
+        # vendors) instead of running 2 fresh SQL queries per vendor.
         # -------------------------
         all_receipts = []
 
@@ -2514,8 +3016,8 @@ def receipt_all_vendors():
 
             vid = int(vendor['vendor_id'])
 
-            cow_rate = get_vendor_rate(cursor, vid, "cow", from_date)
-            buffalo_rate = get_vendor_rate(cursor, vid, "buffalo", from_date)
+            cow_rate = get_vendor_rate(cursor, vid, "cow", from_date, user_id=user_id)
+            buffalo_rate = get_vendor_rate(cursor, vid, "buffalo", from_date, user_id=user_id)
 
             milk_data = milk_map.get(vid, [])
 
@@ -2820,6 +3322,13 @@ def milk_summary_report():
 # ------------------------------
 @app.route("/vendor_range_summary", methods=["GET", "POST"])
 def vendor_range_summary():
+    """
+    OPTIMIZATION NOTE:
+    BEFORE: 1 milk_collection query PER selected vendor.
+    AFTER: 1 bulk query (grouped by vendor_id, milk_type, slot) for ALL
+    selected vendors, then dict lookups in Python. Same totals math and same
+    (pre-existing) rounding order as before - only the data-fetching changed.
+    """
 
     if "id" not in session:
         return redirect(url_for("login"))
@@ -2855,36 +3364,35 @@ def vendor_range_summary():
         to_date = request.form.get("to_date")
         selected_vendors = request.form.getlist("vendors")
 
-        for vendor_id in selected_vendors:
+        vendor_name_map = {str(v['vendor_id']): v['name'] for v in vendors}
+        valid_vendor_ids = [vid for vid in selected_vendors if vid in vendor_name_map]
 
-            cursor.execute("""
-                SELECT name FROM vendors
-                WHERE vendor_id=%s AND user_id=%s
-            """, (vendor_id, session["id"]))
-            vendor = cursor.fetchone()
-            if not vendor:
-                continue
-
-            cursor.execute("""
-                SELECT milk_type, slot, SUM(quantity) as total_qty
+        data_map = {}
+        if valid_vendor_ids:
+            placeholders = ",".join(["%s"] * len(valid_vendor_ids))
+            cursor.execute(f"""
+                SELECT vendor_id, milk_type, slot, SUM(quantity) as total_qty
                 FROM milk_collection
-                WHERE vendor_id=%s AND user_id=%s
+                WHERE user_id=%s AND vendor_id IN ({placeholders})
                 AND date BETWEEN %s AND %s
-                GROUP BY milk_type, slot
-            """, (vendor_id, session["id"], from_date, to_date))
+                GROUP BY vendor_id, milk_type, slot
+            """, tuple([session["id"]] + valid_vendor_ids + [from_date, to_date]))
 
-            data = cursor.fetchall()
+            for row in cursor.fetchall():
+                data_map.setdefault(str(row['vendor_id']), []).append(row)
+
+        for vendor_id in valid_vendor_ids:
 
             summary = {
                 "vendor_id": vendor_id,
-                "name": vendor["name"],
+                "name": vendor_name_map[vendor_id],
                 "cow_morning": 0,
                 "cow_evening": 0,
                 "buffalo_morning": 0,
                 "buffalo_evening": 0
             }
 
-            for row in data:
+            for row in data_map.get(vendor_id, []):
                 key = f"{row['milk_type']}_{row['slot']}"
                 summary[key] = round(row["total_qty"] or 0, 1)
 
@@ -3541,8 +4049,24 @@ def account():
         return redirect(url_for("login"))
 
     cursor = SafeCursor(mysql.connection.cursor())
-    cursor.execute("SELECT id, email, dairy_name, phone FROM users WHERE id = %s", (session["id"],))
+
+    cursor.execute("""
+        SELECT
+            id,
+            email,
+            dairy_name,
+            phone,
+            dairy_code
+        FROM users
+        WHERE id = %s
+    """, (session["id"],))
+
     user = cursor.fetchone()
+
+    if not user:
+        flash("User not found.", "danger")
+        return redirect(url_for("logout"))
+
     return render_template("head/account.html", user=user)
 
 
@@ -3685,6 +4209,632 @@ def date_indian(value):
 
 
 
+
+
+
+#========================================================================================================================
+#========================================================Customer========================================================
+#========================================================================================================================
+
+@app.route("/customer/dashboard")
+def customer_dashboard():
+
+    if session.get("role") != "customer":
+        flash("Please login first.", "warning")
+        return redirect(url_for("customer_login"))
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    today = date.today()
+
+    cursor.execute("""
+        SELECT
+
+            COALESCE(SUM(
+                CASE
+                    WHEN milk_type='cow'
+                    AND slot='morning'
+                    THEN quantity
+                END
+            ),0) AS cow_morning,
+
+            COALESCE(SUM(
+                CASE
+                    WHEN milk_type='cow'
+                    AND slot='evening'
+                    THEN quantity
+                END
+            ),0) AS cow_evening,
+
+            COALESCE(SUM(
+                CASE
+                    WHEN milk_type='buffalo'
+                    AND slot='morning'
+                    THEN quantity
+                END
+            ),0) AS buffalo_morning,
+
+            COALESCE(SUM(
+                CASE
+                    WHEN milk_type='buffalo'
+                    AND slot='evening'
+                    THEN quantity
+                END
+            ),0) AS buffalo_evening
+
+        FROM milk_collection
+
+        WHERE
+            vendor_id = %s
+            AND user_id = %s
+            AND date = %s
+
+    """, (
+        session["vendor_id"],
+        session["owner_id"],
+        today
+    ))
+
+    today_data = cursor.fetchone()
+
+    if not today_data:
+        today_data = {}
+
+    today_data["cow_morning"] = round(today_data.get("cow_morning", 0), 1)
+    today_data["cow_evening"] = round(today_data.get("cow_evening", 0), 1)
+
+    today_data["buffalo_morning"] = round(today_data.get("buffalo_morning", 0), 1)
+    today_data["buffalo_evening"] = round(today_data.get("buffalo_evening", 0), 1)
+
+    today_data["cow_total"] = round(
+        today_data["cow_morning"] + today_data["cow_evening"], 1
+    )
+
+    today_data["buffalo_total"] = round(
+        today_data["buffalo_morning"] + today_data["buffalo_evening"], 1
+    )
+
+    return render_template(
+        "customer/dashboard.html",
+        today=today_data
+    )
+@app.route("/customer/profile")
+def customer_profile():
+
+    if session.get("role") != "customer":
+        flash("Please login first.", "warning")
+        return redirect(url_for("customer_login"))
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    cursor.execute("""
+        SELECT
+            id,
+            email,
+            phone,
+            dairy_name,
+            dairy_code
+        FROM users
+        WHERE id = %s
+    """, (
+        session["owner_id"],
+    ))
+
+    customer = cursor.fetchone()
+
+    if not customer:
+        flash("Profile not found.", "danger")
+        return redirect(url_for("customer_dashboard"))
+
+    return render_template(
+        "customer/profile.html",
+        customer=customer
+    )
+@app.route("/customer/milk-history")
+def customer_milk_history():
+
+    if session.get("role") != "customer":
+        return redirect(url_for("customer_login"))
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    from_date = request.args.get("from_date")
+    to_date = request.args.get("to_date")
+
+    sql = """
+    SELECT
+        date,
+
+        SUM(CASE WHEN slot='morning' AND milk_type='cow'
+            THEN quantity ELSE 0 END) cow_morning,
+
+        SUM(CASE WHEN slot='morning' AND milk_type='buffalo'
+            THEN quantity ELSE 0 END) buffalo_morning,
+
+        SUM(CASE WHEN slot='evening' AND milk_type='cow'
+            THEN quantity ELSE 0 END) cow_evening,
+
+        SUM(CASE WHEN slot='evening' AND milk_type='buffalo'
+            THEN quantity ELSE 0 END) buffalo_evening
+
+    FROM milk_collection
+
+    WHERE
+        vendor_id=%s
+        AND user_id=%s
+    """
+
+    params = [
+        session["vendor_id"],
+        session["owner_id"]
+    ]
+
+    if from_date:
+        sql += " AND date >= %s"
+        params.append(from_date)
+
+    if to_date:
+        sql += " AND date <= %s"
+        params.append(to_date)
+
+    sql += """
+    GROUP BY date
+    ORDER BY date DESC
+    """
+
+    cursor.execute(sql, tuple(params))
+
+    records = cursor.fetchall()
+
+    for r in records:
+
+        r["cow_morning"] = round(r["cow_morning"],1)
+        r["buffalo_morning"] = round(r["buffalo_morning"],1)
+        r["cow_evening"] = round(r["cow_evening"],1)
+        r["buffalo_evening"] = round(r["buffalo_evening"],1)
+
+        r["total"] = round(
+            r["cow_morning"] +
+            r["buffalo_morning"] +
+            r["cow_evening"] +
+            r["buffalo_evening"],1
+        )
+
+    return render_template(
+        "customer/milk_history.html",
+        records=records
+    )
+
+
+@app.route("/customer/payment-history")
+def customer_payment_history():
+    return "<h2>Payment History Coming Soon</h2>"
+
+
+from datetime import date
+
+@app.route('/receipt/<int:vendor_id>', methods=['GET', 'POST'])
+def generate_receipt(vendor_id):
+    print("SESSION IN RECEIPT =", dict(session))
+
+    # ----------------------------
+    # Login Check
+    # ----------------------------
+    if session.get("role") == "customer":
+        user_id = session["owner_id"]
+        vendor_id = session["vendor_id"]
+    elif "id" in session:
+        user_id = int(session["id"])
+    else:
+        flash("Please login first.", "warning")
+        return redirect(url_for("login"))
+
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    # ----------------------------
+    # Fetch vendor info
+    # ----------------------------
+    cursor.execute("""
+        SELECT
+            vendor_id,
+            user_id,
+            name,
+            address,
+            milk_type,
+            phone,
+            ifsc_code,
+            account_no
+        FROM vendors
+        WHERE vendor_id = %s AND user_id = %s
+    """, (vendor_id, user_id))
+
+    vendor = cursor.fetchone()
+
+    if not vendor:
+        cursor.close()
+        flash('Vendor not found.', 'danger')
+        return redirect(url_for('vendor_list'))
+
+    receipt = None
+    from_date = None
+    to_date = None
+
+    if request.method == 'POST':
+        from_date = request.form.get('from_date')
+        to_date = request.form.get('to_date')
+
+        if not from_date or not to_date:
+            flash('Please select both From Date and To Date.', 'warning')
+        else:
+
+            # ----------------------------
+            # Daily milk collection
+            # ----------------------------
+            cursor.execute("""
+                SELECT
+                    date,
+                    COALESCE(SUM(CASE WHEN milk_type='cow' AND slot='morning' THEN quantity END),0) AS cow_morning,
+                    COALESCE(SUM(CASE WHEN milk_type='cow' AND slot='evening' THEN quantity END),0) AS cow_evening,
+                    COALESCE(SUM(CASE WHEN milk_type='buffalo' AND slot='morning' THEN quantity END),0) AS buffalo_morning,
+                    COALESCE(SUM(CASE WHEN milk_type='buffalo' AND slot='evening' THEN quantity END),0) AS buffalo_evening
+                FROM milk_collection
+                WHERE vendor_id = %s
+                  AND user_id = %s
+                  AND date BETWEEN %s AND %s
+                GROUP BY date
+                ORDER BY date
+            """, (vendor_id, user_id, from_date, to_date))
+
+            daily_rows = cursor.fetchall()
+
+            if not daily_rows:
+                flash("No milk collection found for selected period.", "warning")
+
+            total_cow_morning = 0
+            total_cow_evening = 0
+            total_buffalo_morning = 0
+            total_buffalo_evening = 0
+
+            for row in daily_rows:
+                row['cow_morning'] = round(float(row['cow_morning']), 1)
+                row['cow_evening'] = round(float(row['cow_evening']), 1)
+                row['buffalo_morning'] = round(float(row['buffalo_morning']), 1)
+                row['buffalo_evening'] = round(float(row['buffalo_evening']), 1)
+
+                # Display-friendly date (dd-mm-yyyy)
+                row['display_date'] = row['date'].strftime("%d-%m-%Y")
+
+                total_cow_morning += row['cow_morning']
+                total_cow_evening += row['cow_evening']
+                total_buffalo_morning += row['buffalo_morning']
+                total_buffalo_evening += row['buffalo_evening']
+
+            total_cow_morning = round(total_cow_morning, 1)
+            total_cow_evening = round(total_cow_evening, 1)
+            total_buffalo_morning = round(total_buffalo_morning, 1)
+            total_buffalo_evening = round(total_buffalo_evening, 1)
+
+            total_cow_milk = round(total_cow_morning + total_cow_evening, 1)
+            total_buffalo_milk = round(total_buffalo_morning + total_buffalo_evening, 1)
+
+            # ----------------------------
+            # Rates: vendor-specific first, else default
+            # ----------------------------
+            cursor.execute("""
+                SELECT cow_rate, buffalo_rate
+                FROM vendor_milk_rates
+                WHERE vendor_id = %s
+                  AND user_id = %s
+                  AND date_from <= %s
+                ORDER BY date_from DESC
+                LIMIT 1
+            """, (vendor_id, user_id, to_date))
+
+            vendor_rate = cursor.fetchone()
+
+            if vendor_rate:
+                cow_rate = float(vendor_rate.get('cow_rate') or 0)
+                buffalo_rate = float(vendor_rate.get('buffalo_rate') or 0)
+            else:
+                cursor.execute("""
+                    SELECT animal, rate
+                    FROM milk_rates
+                    WHERE user_id = %s
+                      AND date_from <= %s
+                    ORDER BY date_from DESC
+                """, (user_id, to_date))
+
+                rate_rows = cursor.fetchall()
+
+                cow_rate = 0
+                buffalo_rate = 0
+                got_cow = False
+                got_buffalo = False
+
+                for r in rate_rows:
+                    if r['animal'] == 'cow' and not got_cow:
+                        cow_rate = float(r['rate'] or 0)
+                        got_cow = True
+                    elif r['animal'] == 'buffalo' and not got_buffalo:
+                        buffalo_rate = float(r['rate'] or 0)
+                        got_buffalo = True
+                    if got_cow and got_buffalo:
+                        break
+
+            cow_amount = round(total_cow_milk * cow_rate, 2)
+            buffalo_amount = round(total_buffalo_milk * buffalo_rate, 2)
+            total_milk_amount = round(cow_amount + buffalo_amount, 2)
+
+            # ----------------------------
+            # Advance
+            # ----------------------------
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount),0) AS total_advance
+                FROM advance
+                WHERE vendor_id = %s
+                  AND user_id = %s
+                  AND date BETWEEN %s AND %s
+            """, (vendor_id, user_id, from_date, to_date))
+
+            total_advance = round(float(cursor.fetchone()['total_advance']), 2)
+
+            # ----------------------------
+            # Food Sack (JOIN with food_sack_rates)
+            # ----------------------------
+            cursor.execute("""
+                SELECT
+                    fs.date,
+                    r.name,
+                    fs.sack_qty,
+                    fs.sack_rate,
+                    fs.total_cost
+                FROM food_sack fs
+                JOIN food_sack_rates r ON r.id = fs.sack_rate_id
+                WHERE fs.vendor_id = %s
+                  AND fs.user_id = %s
+                  AND fs.date BETWEEN %s AND %s
+                ORDER BY fs.date
+            """, (vendor_id, user_id, from_date, to_date))
+
+            food_sack_rows = cursor.fetchall()
+
+            total_food_sack = 0
+            for fs in food_sack_rows:
+                fs['sack_qty'] = round(float(fs['sack_qty']), 1)
+                fs['sack_rate'] = round(float(fs['sack_rate']), 2)
+                fs['total_cost'] = round(float(fs['total_cost']), 2)
+                fs['display_date'] = fs['date'].strftime("%d-%m-%Y")
+                total_food_sack += fs['total_cost']
+
+            total_food_sack = round(total_food_sack, 2)
+
+            # ----------------------------
+            # Final Payable
+            # ----------------------------
+            net_payable = round(total_milk_amount - total_advance - total_food_sack, 2)
+
+            receipt = {
+                'daily_rows': daily_rows,
+                'total_cow_morning': total_cow_morning,
+                'total_cow_evening': total_cow_evening,
+                'total_buffalo_morning': total_buffalo_morning,
+                'total_buffalo_evening': total_buffalo_evening,
+                'total_cow_milk': total_cow_milk,
+                'total_buffalo_milk': total_buffalo_milk,
+                'cow_rate': cow_rate,
+                'buffalo_rate': buffalo_rate,
+                'cow_amount': cow_amount,
+                'buffalo_amount': buffalo_amount,
+                'total_milk_amount': total_milk_amount,
+                'food_sack_rows': food_sack_rows,
+                'total_food_sack': total_food_sack,
+                'total_advance': total_advance,
+                'net_payable': net_payable,
+                'from_date': from_date,
+                'to_date': to_date,
+                'print_date': date.today().strftime('%d-%m-%Y')
+            }
+
+    cursor.close()
+
+    return render_template(
+        'customer/receipt.html',
+        vendor=vendor,
+        receipt=receipt,
+        from_date=from_date,
+        to_date=to_date
+    )
+
+@app.route('/customer/receipts')
+def customer_receipts():
+
+    print("SESSION =", dict(session))
+    print("CUSTOMER RECEIPTS ROUTE CALLED")
+
+    if 'customer_id' not in session:
+        flash('Please login first.', 'warning')
+        return redirect(url_for('customer_login'))
+
+    return redirect(
+        url_for(
+            'generate_receipt',
+            vendor_id=session['vendor_id']
+        )
+    )
+
+@app.route("/customer/food-sack")
+def customer_food_sack():
+    return "<h2>Food Sack Coming Soon</h2>"
+
+
+@app.route("/customer/advance")
+def customer_advance():
+    return "<h2>Advance Coming Soon</h2>"
+
+@app.route('/customer/notifications')
+def customer_notifications():
+
+    if session.get("role") != "customer":
+        flash("Please login first.", "warning")
+        return redirect(url_for("customer_login"))
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    # Notification open होताच Read कर
+    cursor.execute("""
+        UPDATE customer_notifications
+        SET is_read=1
+        WHERE user_id=%s
+        AND vendor_id=%s
+        AND is_read=0
+    """, (
+        session["owner_id"],
+        session["vendor_id"]
+    ))
+
+    mysql.connection.commit()
+
+    cursor.execute("""
+        SELECT
+            id,
+            type,
+            title,
+            message,
+            is_read,
+            created_at
+        FROM customer_notifications
+        WHERE user_id=%s
+        AND vendor_id=%s
+        ORDER BY created_at DESC
+    """, (
+        session["owner_id"],
+        session["vendor_id"]
+    ))
+
+    notifications = cursor.fetchall()
+
+    cursor.close()
+
+    return render_template(
+        "customer/notifications.html",
+        notifications=notifications
+    )
+
+
+@app.route('/vapid_public_key')
+def vapid_public_key():
+    return jsonify({"publicKey": VAPID_PUBLIC_KEY})
+
+
+@app.route('/subscribe', methods=['POST'])
+def subscribe():
+
+    if session.get("role") != "customer":
+        return jsonify({"message": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+
+    endpoint = data.get("endpoint")
+    keys = data.get("keys", {})
+    p256dh = keys.get("p256dh")
+    auth = keys.get("auth")
+
+    if not endpoint or not p256dh or not auth:
+        return jsonify({"message": "Invalid subscription data"}), 400
+
+    user_id = session["owner_id"]
+    vendor_id = session["vendor_id"]
+
+    cursor = SafeCursor(mysql.connection.cursor())
+
+    # Current Database
+    cursor.execute("SELECT DATABASE()")
+    print("SUBSCRIBE DB:", cursor.fetchone())
+
+    cursor.execute(
+        "SELECT id FROM push_subscriptions WHERE endpoint=%s",
+        (endpoint,)
+    )
+    existing = cursor.fetchone()
+
+    if existing:
+        cursor.execute("""
+            UPDATE push_subscriptions
+            SET user_id=%s,
+                vendor_id=%s,
+                p256dh=%s,
+                auth=%s
+            WHERE endpoint=%s
+        """, (
+            user_id,
+            vendor_id,
+            p256dh,
+            auth,
+            endpoint
+        ))
+        print("UPDATED EXISTING SUBSCRIPTION")
+    else:
+        cursor.execute("""
+            INSERT INTO push_subscriptions
+            (user_id, vendor_id, endpoint, p256dh, auth)
+            VALUES (%s,%s,%s,%s,%s)
+        """, (
+            user_id,
+            vendor_id,
+            endpoint,
+            p256dh,
+            auth
+        ))
+        print("INSERTED NEW SUBSCRIPTION")
+
+    mysql.connection.commit()
+
+    print("COMMIT SUCCESS")
+
+    cursor.execute("""
+        SELECT
+            id,
+            user_id,
+            vendor_id
+        FROM push_subscriptions
+    """)
+
+    print("ALL SUBSCRIPTIONS:")
+    print(cursor.fetchall())
+
+    cursor.close()
+
+    return jsonify({"message": "Subscribed"}), 200
+
+
+@app.context_processor
+def customer_notification_context():
+
+    if session.get("role") == "customer":
+
+        return {
+            "unread_count": get_unread_notification_count(
+                session["owner_id"],
+                session["vendor_id"]
+            )
+        }
+
+    return {"unread_count": 0}
+
+@app.route("/customer/logout")
+def customer_logout():
+    session.pop("role", None)
+    session.pop("vendor_id", None)
+    session.pop("owner_id", None)
+    flash("Logged out successfully.", "success")
+    return redirect(url_for("customer_login"))
+
+
+
+
+
+
+
 # ------------------------------
 # Healthcheck (simple)
 # ------------------------------
@@ -3696,5 +4846,5 @@ def healthcheck():
 import os
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=True)
