@@ -33,6 +33,8 @@ import zipfile
 from openpyxl.styles import Font, Border, Side, Alignment
 from backup_system import create_backup, create_full_backup, restore_backup, list_backups
 
+from datetime import timedelta
+
 load_dotenv()
 
 # ------------------------------
@@ -45,6 +47,7 @@ app.secret_key = os.getenv("SECRET_KEY", "d7e5f19e4c2a4a7b93c6f405f3d9a8c3b1a0c9
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 # MySQL configuration from environment
 app.config['MYSQL_HOST'] = os.getenv("MYSQL_HOST")
@@ -57,6 +60,8 @@ app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
 app.config['MYSQL_CONNECT_TIMEOUT'] = 30
 app.config['MYSQL_READ_DEFAULT_FILE'] = ''
 app.config['MYSQL_AUTOCOMMIT'] = True
+
+
 mysql = MySQL(app)
 
 # ==============================================================================
@@ -418,19 +423,18 @@ def login():
 
         if account and account.get("is_verified") and check_password_hash(account['password'], password):
 
-            if account.get('is_verified'):
+            session.clear()
+            session.permanent = True
 
-                session.clear()
+            session['id'] = int(account['id'])
+            session['loggedin'] = True
+            session['role'] = "owner"
+            session['email'] = account['email']
+            session['dairy_name'] = account.get('dairy_name')
 
-                session['id'] = int(account['id'])
-                session['loggedin'] = True
-                session['role'] = "owner"
-                session['email'] = account['email']
-                session['dairy_name'] = account.get('dairy_name')
+            flash('Logged in successfully!', 'success')
 
-                flash('Logged in successfully!', 'success')
-
-                return redirect(url_for('dashboard'))
+            return redirect(url_for('dashboard'))
 
         # -----------------------------
         # STAFF LOGIN
@@ -445,6 +449,7 @@ def login():
         if staff and check_password_hash(staff['password'], password):
 
             session.clear()
+            session.permanent = True
 
             session['loggedin'] = True
             session['role'] = "staff"
@@ -453,7 +458,8 @@ def login():
             session['owner_id'] = staff['owner_id']
             session['vehicle'] = staff['vehicle_number']
 
-            session['id'] = staff['owner_id']   # important
+            # Owner ID is used throughout the app
+            session['id'] = staff['owner_id']
 
             flash('Staff login successful', 'success')
 
@@ -496,9 +502,11 @@ def customer_login():
         if customer:
 
             session.clear()
+            session.permanent = True
 
             session['loggedin'] = True
             session['role'] = 'customer'
+
             session['customer_id'] = customer['id']
             session['vendor_id'] = customer['vendor_id']
             session['vendor_db_id'] = customer['id']
